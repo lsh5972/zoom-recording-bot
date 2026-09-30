@@ -1,0 +1,27 @@
+#pragma once
+
+#include <cstdint>
+#include <cstring>
+#include <ctime>
+#include <pthread.h>
+#include <zoom_sdk.h>
+#include <auth_service_interface.h>
+#include <meeting_service_interface.h>
+#include <meeting_service_components/meeting_audio_interface.h>
+#include <meeting_service_components/meeting_recording_interface.h>
+#include <meeting_service_components/meeting_participants_ctrl_interface.h>
+#include <meeting_service_components/meeting_video_interface.h>
+#include <meeting_service_components/meeting_sharing_interface.h>
+#include <meeting_service_components/meeting_chat_interface.h>
+#include <meeting_service_components/meeting_waiting_room_interface.h>
+#include <meeting_service_components/meeting_reminder_ctrl_interface.h>
+#include <meeting_service_components/meeting_configuration_interface.h>
+#include <meeting_service_components/meeting_breakout_rooms_interface_v2.h>
+#include <meeting_service_components/meeting_webinar_interface.h>
+#include <meeting_service_components/meeting_inmeeting_encryption_interface.h>
+#include <meeting_service_components/meeting_ai_companion_interface.h>
+#include <setting_service_interface.h>
+#include <network_connection_handler_interface.h>
+#include <zoom_sdk_raw_data_def.h>
+#include <rawdata/rawdata_audio_helper_interface.h>
+#include <rawdata/zoom_rawdata_api.h>
