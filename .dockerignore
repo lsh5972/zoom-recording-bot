@@ -1,0 +1,14 @@
+**
+!Dockerfile
+!worker/
+!worker/**
+!scripts/
+!scripts/**
+!docker/
+!docker/**
+!vendor/
+!vendor/zoom-sdk/
+!vendor/zoom-sdk/**
+!vendor/zoom-api/
+!vendor/zoom-api/h/
+!vendor/zoom-api/h/**
