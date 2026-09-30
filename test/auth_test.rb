@@ -62,6 +62,22 @@ class AuthTest < Minitest::Test
     assert_equal 'https://api.zoom.us/v2/users/host%2Fname%2Bone/token?type=zak', http.requests.first.first.to_s
   end
 
+  def test_zak_issuance_needs_only_s2s_credentials
+    credentials = {
+      'ZOOM_S2S_ACCOUNT_ID' => 'account', 'ZOOM_S2S_CLIENT_ID' => 'client',
+      'ZOOM_S2S_CLIENT_SECRET' => 's2s-only-secret'
+    }
+    oauth = FakeHttp.new({ 'access_token' => 's2s-access', 'expires_in' => 3600 })
+    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'actual-host' }, { 'token' => 'host-zak' })
+    tokens = ZoomBot::AccessTokenProvider.new(credentials, http: oauth)
+    api = ZoomBot::ZoomApiClient.new(tokens, http: http)
+    host = api.meeting('123456789').fetch('host_id')
+    assert_equal 'host-zak', api.host_zak(host)
+    assert_equal 1, oauth.requests.length
+    assert_equal 2, http.requests.length
+    assert_equal 'Bearer s2s-access', http.requests.last.last['Authorization']
+  end
+
   def test_missing_credentials_report_names_without_values
     error = assert_raises(ZoomBot::Error) { ZoomBot::Settings.new({ 'ZOOM_SDK_CLIENT_ID' => 'private-value' }) }
     assert_includes error.message, 'ZOOM_S2S_ACCOUNT_ID'
