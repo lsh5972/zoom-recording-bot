@@ -34,8 +34,34 @@ begin
     raise ZoomBot::Error, 'Usage: bin/zoom-bot stop SESSION_ID' unless ARGV.length == 1
     ZoomBot::BotSupervisor.new(image: 'unused').stop(ARGV.first)
     puts 'Container stopped. Output files retained.'
+  when 'deliver'
+    watch = ARGV.delete('--watch')
+    raise ZoomBot::Error, 'Usage: bin/zoom-bot deliver SESSION_ID [--watch]' unless ARGV.length == 1
+    session_id = ARGV.first
+    raise ZoomBot::Error, 'Invalid session ID' unless session_id.match?(/\A[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/)
+    client = ZoomBot::ChunkHttpClient.new(endpoint: ENV['ZOOM_CHUNK_ENDPOINT'],
+                                         bearer_token: ENV['ZOOM_CHUNK_BEARER_TOKEN'])
+    output = File.expand_path("../runs/#{session_id}/output", __dir__)
+    sender = ZoomBot::ChunkDelivery.new(output: output, client: client)
+    retry_delay = 1
+    loop do
+      begin
+        delivered = sender.drain
+        puts "Delivered #{delivered} WAV chunk(s)." if delivered.positive? || !watch
+        retry_delay = 1
+        break unless watch
+
+        sleep 0.25
+      rescue ZoomBot::DeliveryError => error
+        raise unless watch && error.retryable
+
+        warn "#{error.message}. Retry in #{retry_delay}s."
+        sleep retry_delay
+        retry_delay = [retry_delay * 2, 60].min
+      end
+    end
   else
-    warn 'Usage: ruby bin/zoom-bot check | prepare MEETING_ID | run MEETING_ID | stop SESSION_ID'
+    warn 'Usage: ruby bin/zoom-bot check | prepare MEETING_ID | run MEETING_ID | stop SESSION_ID | deliver SESSION_ID [--watch]'
     exit 1
   end
 rescue ZoomBot::Error, Errno::ENOENT, Errno::EACCES => error
