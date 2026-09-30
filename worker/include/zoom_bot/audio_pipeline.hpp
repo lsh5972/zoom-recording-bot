@@ -21,6 +21,7 @@ class AudioPipeline {
   void left(uint32_t user_id, int64_t at_ms);
   void consume(PcmPacket packet);
   void advance(int64_t now_ms);
+  void pause(const std::string& reason, int64_t at_ms);
   void finish(const std::string& reason, int64_t at_ms);
 
  private:

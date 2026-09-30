@@ -18,6 +18,7 @@ class SessionTest < Minitest::Test
       result = preparer(root, http).prepare('123 456 789')
       path = File.join(result[:directory], 'join.json')
       join = JSON.parse(File.read(path))
+      assert_equal result[:session_id], join['session_id']
       assert_equal 'actual-host', join['host_user_id']
       assert_equal 'secret-zak', join['user_zak']
       assert_equal 'meeting-secret', join['passcode']

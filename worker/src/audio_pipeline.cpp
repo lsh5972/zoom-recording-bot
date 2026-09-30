@@ -119,15 +119,20 @@ void AudioPipeline::advance(int64_t now_ms) {
   }
 }
 
-void AudioPipeline::finish(const std::string& reason, int64_t at_ms) {
+void AudioPipeline::pause(const std::string& reason, int64_t at_ms) {
   for (auto& [user_id, participant] : participants_) {
     (void)user_id;
     if (participant.stream) {
       participant.stream->drain();
       participant.stream->segmenter.finish(reason, at_ms);
+      participant.stream.reset();
     }
   }
   events_.append("capture.stopped", at_ms, {{"reason", reason}});
+}
+
+void AudioPipeline::finish(const std::string& reason, int64_t at_ms) {
+  pause(reason, at_ms);
   participants_.clear();
 }
 }  // namespace zoom_bot

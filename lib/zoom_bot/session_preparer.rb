@@ -18,13 +18,13 @@ module ZoomBot
 
       # The host comes from Zoom, never from a caller-provided user ID.
       zak = @api.host_zak(host_id)
+      session_id = SecureRandom.uuid
       credentials = {
-        schema_version: 1, meeting_id: meeting_id, host_user_id: host_id,
+        schema_version: 1, session_id: session_id, meeting_id: meeting_id, host_user_id: host_id,
         passcode: meeting.fetch('password', '').to_s, display_name: 'Meeting Recorder',
         sdk_jwt: @signatures.issue, user_zak: zak, prepared_at: @clock.call.utc.iso8601
       }
 
-      session_id = SecureRandom.uuid
       directory = File.join(@root, session_id)
       FileUtils.mkdir_p(directory, mode: 0o700)
       FileUtils.mkdir_p(File.join(directory, 'output'), mode: 0o700)
