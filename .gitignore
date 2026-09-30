@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+/runs/
+/vendor/
+/build/
+*.tar.xz
+*.tar.gz
+*.so
+.DS_Store
