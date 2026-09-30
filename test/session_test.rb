@@ -1,0 +1,112 @@
+# frozen_string_literal: true
+
+require_relative 'test_helper'
+
+class SessionTest < Minitest::Test
+  include TestFixtures
+
+  def preparer(root, http)
+    tokens = Struct.new(:token).new('access')
+    ZoomBot::SessionPreparer.new(ZoomBot::ZoomApiClient.new(tokens, http: http),
+                                ZoomBot::SdkSignature.new(settings), root: root)
+  end
+
+  def test_prepare_uses_actual_meeting_host_and_keeps_secrets_private
+    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'actual-host', 'password' => 'meeting-secret' },
+                        { 'token' => 'secret-zak' })
+    Dir.mktmpdir do |root|
+      result = preparer(root, http).prepare('123 456 789')
+      path = File.join(result[:directory], 'join.json')
+      join = JSON.parse(File.read(path))
+      assert_equal 'actual-host', join['host_user_id']
+      assert_equal 'secret-zak', join['user_zak']
+      assert_equal 'meeting-secret', join['passcode']
+      assert_equal 0o600, File.stat(path).mode & 0o777
+      assert_equal 0o700, File.stat(result[:directory]).mode & 0o777
+      assert_equal '/v2/users/actual-host/token', http.requests.last.first.path
+      refute_includes File.read(File.join(result[:directory], 'session.json')), 'secret'
+      refute_includes File.read(path), settings.fetch('ZOOM_S2S_CLIENT_SECRET')
+      refute_includes File.read(path), settings.fetch('ZOOM_SDK_CLIENT_SECRET')
+      refute_includes result.inspect, 'secret-zak'
+    end
+  end
+
+  def test_invalid_meeting_id_makes_no_request
+    http = FakeHttp.new
+    Dir.mktmpdir do |root|
+      ['../123456789', '123', '123456789;echo secret', '123456789?x=y'].each do |id|
+        assert_raises(ZoomBot::Error) { preparer(root, http).prepare(id) }
+      end
+      assert_empty http.requests
+      assert_empty Dir.children(root)
+    end
+  end
+
+  def test_missing_or_mismatched_meeting_host_never_requests_zak
+    [{ 'id' => 123456789 }, { 'id' => 987654321, 'host_id' => 'wrong-host' }].each do |meeting|
+      http = FakeHttp.new(meeting)
+      Dir.mktmpdir do |root|
+        assert_raises(ZoomBot::Error) { preparer(root, http).prepare('123456789') }
+        assert_equal 1, http.requests.length
+        assert_empty Dir.children(root)
+      end
+    end
+  end
+
+  def test_distinct_runs_do_not_reuse_zak_or_overwrite_old_session
+    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host' }, { 'token' => 'zak-one' },
+                        { 'id' => 123456789, 'host_id' => 'host' }, { 'token' => 'zak-two' })
+    Dir.mktmpdir do |root|
+      service = preparer(root, http)
+      one = service.prepare('123456789')
+      two = service.prepare('123456789')
+      refute_equal one[:session_id], two[:session_id]
+      assert_equal 'zak-one', JSON.parse(File.read(File.join(one[:directory], 'join.json')))['user_zak']
+      assert_equal 'zak-two', JSON.parse(File.read(File.join(two[:directory], 'join.json')))['user_zak']
+    end
+  end
+
+  def test_container_launch_exposes_only_file_paths_and_retains_output
+    calls = []
+    success = Struct.new(:success?).new(true)
+    command = ->(*args) { calls << args; ['', '', success] }
+    supervisor = ZoomBot::BotSupervisor.new(image: 'zoom-bot-worker:test', command: command)
+    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host' }, { 'token' => 'never-in-argv' })
+    Dir.mktmpdir do |root|
+      session = preparer(root, http).prepare('123456789')
+      supervisor.check_image!
+      name = supervisor.start(session)
+      assert_equal "zoom-bot-#{session[:session_id]}", name
+      args = calls.last
+      assert_equal %w[docker run --detach --pull=never], args.first(4)
+      assert args.any? { |argument| argument.end_with?('join.json,readonly') }
+      refute_includes args.join(' '), 'never-in-argv'
+      refute_includes args, '--rm'
+      supervisor.stop(session[:session_id])
+      assert File.directory?(File.join(session[:directory], 'output'))
+    end
+  end
+
+  def test_failed_container_launch_preserves_session_without_echoing_docker_output
+    failure = Struct.new(:success?).new(false)
+    command = ->(*_args) { ['private-output', 'private-error', failure] }
+    supervisor = ZoomBot::BotSupervisor.new(image: 'zoom-bot-worker:test', command: command)
+    assert_raises(ZoomBot::Error) { supervisor.check_image! }
+    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host' }, { 'token' => 'secret-zak' })
+    Dir.mktmpdir do |root|
+      session = preparer(root, http).prepare('123456789')
+      error = assert_raises(ZoomBot::Error) { supervisor.start(session) }
+      refute_includes error.message, 'private-output'
+      refute_includes error.message, 'private-error'
+      assert File.exist?(File.join(session[:directory], 'join.json'))
+    end
+  end
+
+  def test_stop_rejects_arbitrary_container_names_without_running_docker
+    calls = []
+    command = ->(*args) { calls << args }
+    supervisor = ZoomBot::BotSupervisor.new(image: 'unused', command: command)
+    assert_raises(ZoomBot::Error) { supervisor.stop('some-other-service') }
+    assert_empty calls
+  end
+end
