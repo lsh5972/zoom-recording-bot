@@ -1,7 +1,6 @@
 #include "zoom_bot/capture_runtime.hpp"
 
 #include <algorithm>
-#include <cstdlib>
 #include <limits>
 #include <map>
 #include <optional>
@@ -141,9 +140,9 @@ void CaptureRuntime::consume() noexcept {
               previous->second.channels == packet.channels && source >= previous->second.last_source_ms) {
             auto& clock = previous->second;
             const auto expected = clock.origin_ms + static_cast<int64_t>(clock.frames * 1000 / clock.rate);
-            // A callback burst may share one timestamp across several 10ms frames.
-            // Preserve each frame; only smooth one frame of jitter when the timestamp advances.
-            if (source == clock.last_source_ms || std::llabs(packet.start_ms - expected) <= duration + 1) {
+            // Monotonic callback timestamps may lag behind a buffered PCM burst.
+            // Sample counts keep the stream continuous; actual backwards timestamps still fail.
+            if (packet.start_ms <= expected + duration + 1) {
               packet.start_ms = expected;
               clock.frames += packet.samples.size() / packet.channels;
               clock.last_source_ms = source;

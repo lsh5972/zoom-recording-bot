@@ -69,6 +69,27 @@ int main() {
       for (size_t i = 1; i < alice.size(); ++i)
         require(alice[i] - alice[i - 1] == 10, "PCM sample counts must define consecutive frame times");
     }
+    {
+      Output output;
+      CaptureRuntime capture(output.root, "session");
+      capture.admitted();
+      for (uint64_t timestamp : {9000, 9000, 9000, 9009, 9029, 9029})
+        capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, timestamp);
+      capture.close();
+      require(!capture.failed(), "Advancing SDK timestamps after a buffered burst must not rewind PCM");
+      int packets = 0;
+      int64_t first = 0;
+      for (const auto& event : output.events()) {
+        require(event["type"] != "audio.gap", "Buffered timestamp overlaps must not split speech");
+        if (event["type"] == "sdk.raw_audio.one_way") {
+          const auto start = event["data"]["start_ms"].get<int64_t>();
+          if (packets == 0) first = start;
+          require(start == first + packets * 10, "Keep every buffered frame on the sample timeline");
+          ++packets;
+        }
+      }
+      require(packets == 6, "A buffered overlap must retain all six PCM frames");
+    }
     for (bool backwards : {false, true}) {
       Output output;
       CaptureRuntime capture(output.root, "session");
@@ -100,7 +121,7 @@ int main() {
         require(std::string(error.what()) == "Invalid or unreadable join configuration", "Config errors must redact parser text");
       }
     }
-    std::cout << "8 capture/config cases passed\n";
+    std::cout << "9 capture/config cases passed\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
