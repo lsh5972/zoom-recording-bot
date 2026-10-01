@@ -17,7 +17,10 @@ SDK 연결 코드와 Dockerfile도 구현했다. SDK 인증 → 호스트 `userZ
 raw recording 권한 확인 → 사용자별 PCM 콜백을 음성 엔진에 연결한다.
 공개 공식 API 헤더 기준으로 macOS와 Ubuntu 22.04 ARM64 컨테이너에서 컴파일·테스트했다.
 SDK 테스트는 서비스 응답을 대체하며 실제 음성 fixture를 콜백부터 WAV까지 처리한다.
-**실제 SDK 바이너리와 Zoom 자격증명으로 회의 입장은 아직 검증하지 않았다.**
+실제 Linux-All SDK 7.2.1 (5860)을 Linux ARM64 Docker에서 링크·실행했다.
+실제 S2S 인증·회의 호스트 조회·ZAK 발급·SDK 인증·공동 호스트 입장·VoIP 연결까지 확인했다.
+현재 실제 회의에서는 로컬 녹음 권한 확인은 성공하지만 raw 녹음 시작은 오류 2,
+raw 오디오 구독은 오류 12를 반환한다. **실제 회의의 WAV 생성은 아직 검증되지 않았다.**
 
 ## 실행 환경과 설정
 
@@ -72,7 +75,11 @@ General App → Features → Embed → Meeting SDK → Linux에서 받는다.
 
 SDK 확보·빌드 작업은 구현 과정에 포함된다. 계정 접근이나 약관 동의가 필요한 경우에는
 사용자가 승인한 범위 안에서 진행한다. 바이너리를 저장소에 커밋하지 않는다.
-실제 배포본을 확보한 뒤 SDK 버전·아키텍처·해시를 고정해야 한다.
+현재 배포본은 `zoom-meeting-sdk-linux-7.2.1.5860.tar.xz`이고,
+SHA-256은 `sdk.sha256`에 고정했다. Linux-All 아카이브에는 `arm64/`와 `x86_64/`가 함께 있다.
+현재 `vendor/zoom-sdk/`는 ARM64 7.2.1이며, x86_64 원본은
+`vendor/zoom-sdk-linux-7.2.1.5860/x86_64/`에 있다.
+SDK를 교체할 때는 이전 디렉터리와 섞지 않고 대상 아키텍처의 배포 디렉터리 전체를 사용한다.
 공식 문서상 7.0부터 ARM64를 지원한다. 로컬 Docker는 Linux ARM64이므로
 ARM64 SDK와 같은 아키텍처의 Ubuntu 이미지를 사용하고, x86 에뮬레이션을 전제로 삼지 않는다.
 
@@ -89,7 +96,8 @@ docker build --target api-check -t zoom-bot-api-check:local .
 `vendor/zoom-sdk/`에 배치한 뒤 운영 worker 이미지를 빌드한다.
 
 ```sh
-docker build --target worker -t zoom-bot-worker:local .
+# Apple Silicon의 네이티브 Linux ARM64 worker:
+docker build --platform linux/arm64 --target worker -t zoom-bot-worker:local .
 ```
 
 Docker는 자격증명·회의 출력 폴더를 빌드 context에서 제외한다. 한 회의의 worker에는
@@ -104,6 +112,7 @@ Docker는 자격증명·회의 출력 폴더를 빌드 context에서 제외한�
 
 `ZOOM_BOT_IMAGE`는 로컬에 빌드된 worker 이미지 이름이다.
 `run`은 이미지 존재 여부부터 확인한 뒤 새 세션을 준비한다.
+위 빌드 명령을 사용했다면 `ZOOM_BOT_IMAGE='zoom-bot-worker:local'`로 설정한다.
 
 ```sh
 ruby bin/zoom-bot run 12345678901
@@ -220,6 +229,10 @@ ctest --test-dir build --output-on-failure
 ## 건별 전달
 
 `.env`에 `ZOOM_CHUNK_ENDPOINT`를 입력한다. 필요하면 `ZOOM_CHUNK_BEARER_TOKEN`도 설정한다.
+endpoint는 완성된 WAV와 메타데이터를 건별로 받는 외부 API 주소다.
+Bearer token은 해당 수신 API가 발급·검증하는 인증 토큰이며 Zoom 자격증명과 무관하다.
+값에 `Bearer ` 접두사는 넣지 않는다. 전송기가 `Authorization: Bearer ...`를 붙인다.
+endpoint를 비워 두면 로컬 파일 저장만 사용한다. 수신 API에 인증이 없으면 token도 비워 둔다.
 HTTPS를 사용하며 로컬 테스트에 한해 loopback HTTP를 허용한다.
 
 ```sh
@@ -252,4 +265,6 @@ C++ 테스트는 동시 화자 분리, 30초 경계, 발화 이벤트, pre-roll�
 권한 철회·복원·재접속, SDK 버퍼 수명 종료 후 화자별 WAV 유지, active-audio 원본 이벤트,
 구독 실패 시 rollback, 큐 넘침 오류, 봇만 퇴장.
 컨테이너에서 컴파일·테스트와 PulseAudio 장치 초기화를 검증했다.
-실제 SDK 바이너리 링크·Zoom API 인증·회의 입장 검증은 포함하지 않는다.
+Linux ARM64 SDK 7.2.1 바이너리 링크와 실제 Zoom API 인증·공동 호스트 입장은 별도로 확인했다.
+SDK의 `USERROLE_COHOST` 값은 2이며, `is_host=false`만으로 일반 참가자라고 판단하지 않는다.
+실제 WAV와 두 사람의 화자별 캡처 검증은 raw 오디오 접근 오류가 해결된 뒤 진행해야 한다.
