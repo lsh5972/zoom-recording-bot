@@ -66,7 +66,8 @@ struct AudioSettings : IAudioSettingContextStub {
 };
 struct Settings : ISettingServiceStub {
   AudioSettings audio;
-  IAudioSettingContext* GetAudioSettings() override { return &audio; }
+  int audio_requests = 0;
+  IAudioSettingContext* GetAudioSettings() override { ++audio_requests; return &audio; }
 };
 struct Auth : IAuthServiceStub {
   IAuthServiceEvent* listener = nullptr;
@@ -153,8 +154,11 @@ JoinConfig config() { return {"00000000-0000-4000-8000-000000000001", "123456789
 void admit(ZoomSession& session, Backend& sdk) {
   session.start();
   require(sdk.meeting.joins == 0, "Join must wait for SDK authentication callback");
+  require(sdk.settings.audio_requests == 0, "Audio settings must wait for SDK authentication callback");
   sdk.auth.listener->onAuthenticationReturn(AUTHRET_SUCCESS);
   session.tick();
+  require(sdk.settings.audio_requests == 1 && !sdk.settings.audio.automatic && sdk.settings.audio.muted,
+          "Configure manual audio join and muted microphone after authentication, before meeting join");
   require(sdk.meeting.joins == 1 && sdk.meeting.starts == 0, "Bot must join the existing meeting, never start another");
   require(sdk.meeting.zak == "secret-zak" && sdk.meeting.number == 123456789, "Join must carry actual host ZAK and meeting ID");
   sdk.meeting.listener->onMeetingStatusChanged(MEETING_STATUS_INMEETING, 0);

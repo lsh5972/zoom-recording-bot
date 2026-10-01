@@ -155,6 +155,14 @@ void ZoomSession::start() {
   if (!auth_ || !meeting_ || !settings_) throw std::runtime_error("SDK did not create services");
   check(auth_->SetEvent(&auth_events_), "register_auth_events");
   check(meeting_->SetEvent(&meeting_events_), "register_meeting_events");
+  AuthContext context;
+  context.jwt_token = config_.sdk_jwt.c_str();
+  check(auth_->SDKAuth(context), "authenticate");
+}
+
+void ZoomSession::join() {
+  if (join_requested_ || done_) return;
+  // The real SDK exposes audio settings only after successful authentication.
   auto* audio_settings = settings_->GetAudioSettings();
   if (!audio_settings) throw std::runtime_error("SDK audio settings unavailable");
   check(audio_settings->EnableAutoJoinAudio(false), "disable_automatic_audio_join");
@@ -163,13 +171,6 @@ void ZoomSession::start() {
   capture_.event("sdk.event_coverage", {{"interface", "IAudioSettingContextEvent"},
                                        {"callbacks", device_events_.callbacks()}, {"registered", true}});
   register_events();
-  AuthContext context;
-  context.jwt_token = config_.sdk_jwt.c_str();
-  check(auth_->SDKAuth(context), "authenticate");
-}
-
-void ZoomSession::join() {
-  if (join_requested_ || done_) return;
   JoinParam params;
   params.userType = SDK_UT_WITHOUT_LOGIN;
   auto& user = params.param.withoutloginuserJoin;
