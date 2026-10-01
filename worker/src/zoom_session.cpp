@@ -301,7 +301,12 @@ void ZoomSession::try_recording() {
   const bool authorized_role = self && (self->IsHost() || role == USERROLE_COHOST);
   // CanStartRawRecording checks starting authority. During capture, revocation comes from the SDK event.
   const auto permission = subscribed_ ? SDKERR_SUCCESS : recording_->CanStartRawRecording();
+  const auto local_permission = self ? recording_->CanStartRecording(false, self->GetUserID()) : SDKERR_NO_PERMISSION;
   nlohmann::json state = {{"role", sdk_value(role)}, {"is_host", self && self->IsHost()},
+                          {"role_name", role == USERROLE_HOST ? "host" : role == USERROLE_COHOST ? "cohost" : "other"},
+                          {"audio_join_type", self ? sdk_value(self->GetAudioJoinType()) : nlohmann::json(nullptr)},
+                          {"local_recording_result", sdk_value(local_permission)},
+                          {"local_recording_support_result", self ? sdk_value(recording_->IsSupportLocalRecording(self->GetUserID())) : nlohmann::json(nullptr)},
                           {"raw_recording_result", static_cast<int>(permission)}, {"privilege_revoked", denied_.load()},
                           {"permission_source", subscribed_ ? "active_subscription_and_privilege_events" : "can_start_raw_recording"}};
   if (state != previous_permission_) { capture_.event("recording.permission", state); previous_permission_ = state; }
