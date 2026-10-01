@@ -49,6 +49,7 @@ class ZoomSession final : public SdkEventSink, public IZoomSDKAudioRawDataDelega
   IZoomSDKAudioRawDataHelper* raw_ = nullptr;
   bool initialized_ = false, in_meeting_ = false, recording_started_ = false, subscribed_ = false;
   bool join_requested_ = false, done_ = false, error_ = false;
+  bool recording_privilege_requested_ = false;
   std::atomic<bool> denied_{false};
   std::atomic<bool> receiving_{false};
   std::chrono::steady_clock::time_point deadline_, next_permission_check_;

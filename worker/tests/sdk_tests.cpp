@@ -45,11 +45,14 @@ struct Participants : IMeetingParticipantsControllerStub {
 struct Recording : IMeetingRecordingControllerStub {
   IMeetingRecordingCtrlEvent* listener = nullptr;
   SDKError permission = SDKERR_SUCCESS, start_result = SDKERR_SUCCESS;
-  int starts = 0, stops = 0;
+  SDKError request_support = SDKERR_NO_PERMISSION, request_result = SDKERR_SUCCESS;
+  int starts = 0, stops = 0, requests = 0;
   SDKError SetEvent(IMeetingRecordingCtrlEvent* value) override { listener = value; return SDKERR_SUCCESS; }
   SDKError CanStartRawRecording() override { return permission; }
   SDKError StartRawRecording() override { ++starts; return start_result; }
   SDKError StopRawRecording() override { ++stops; return SDKERR_SUCCESS; }
+  SDKError IsSupportRequestLocalRecordingPrivilege() override { return request_support; }
+  SDKError RequestLocalRecordingPrivilege() override { ++requests; return request_result; }
 };
 struct Audio : IMeetingAudioControllerStub {
   IMeetingAudioCtrlEvent* listener = nullptr;
@@ -125,7 +128,7 @@ struct Meeting : IMeetingServiceStub {
   SDKError Join(JoinParam& params) override {
     require(params.userType == SDK_UT_WITHOUT_LOGIN, "Native join must use without-login user type");
     auto& user = params.param.withoutloginuserJoin;
-    require(user.app_privilege_token == nullptr, "Host ZAK must not be passed as app privilege token");
+    require(user.app_privilege_token == nullptr, "User ZAK must not be passed as app privilege token");
     require(user.isVideoOff && !user.isAudioRawDataStereo, "Bot must join with video off and mono capture");
     number = user.meetingNumber; zak = user.userZAK; password = user.psw; ++joins;
     return SDKERR_SUCCESS;
@@ -183,7 +186,7 @@ void admit(ZoomSession& session, Backend& sdk) {
   require(sdk.settings.audio_requests == 1 && !sdk.settings.audio.automatic && sdk.settings.audio.muted,
           "Configure manual audio join and muted microphone after authentication, before meeting join");
   require(sdk.meeting.joins == 1 && sdk.meeting.starts == 0, "Bot must join the existing meeting, never start another");
-  require(sdk.meeting.zak == "secret-zak" && sdk.meeting.number == 123456789, "Join must carry actual host ZAK and meeting ID");
+  require(sdk.meeting.zak == "secret-zak" && sdk.meeting.number == 123456789, "Join must carry the configured user ZAK and meeting ID");
   sdk.meeting.listener->onMeetingStatusChanged(MEETING_STATUS_INMEETING, 0);
   session.tick();
 }
@@ -227,6 +230,57 @@ void sdk_permission_controls_recording() {
     capture.close();
     require(output.events("capture.started").size() == (mode == 0 ? 1 : 0),
             "Capture success must match SDK recording permission");
+  }
+}
+
+void attendee_requests_recording_once_and_waits_for_grant() {
+  for (int scenario = 0; scenario < 4; ++scenario) {
+    Backend sdk; backend = &sdk; Output output;
+    sdk.meeting.participants.self.role = USERROLE_ATTENDEE;
+    sdk.meeting.recording.permission = SDKERR_NO_PERMISSION;
+    sdk.meeting.recording.request_support = SDKERR_SUCCESS;
+    if (scenario == 3) sdk.meeting.recording.request_result = SDKERR_NO_PERMISSION;
+    CaptureRuntime capture(output.root, "session");
+    {
+      ZoomSession session(config(), capture); admit(session, sdk);
+      require(sdk.meeting.recording.requests == 1 && sdk.raw.subscriptions == 0,
+              "An attendee must request permission without starting unauthorized capture");
+      sdk.meeting.audio.listener->onUserAudioStatusChange(nullptr, nullptr); session.tick();
+      require(sdk.meeting.recording.requests == 1, "Pending or failed requests must not be repeated");
+      if (scenario == 0) {
+        sdk.meeting.recording.permission = SDKERR_SUCCESS;
+        sdk.meeting.recording.listener->onLocalRecordingPrivilegeRequestStatus(RequestLocalRecording_Granted);
+        session.tick();
+        require(sdk.raw.subscriptions == 1, "An approved request must start per-user capture");
+        sdk.meeting.recording.permission = SDKERR_NO_PERMISSION;
+        sdk.meeting.recording.listener->onRecordPrivilegeChanged(false); session.tick();
+        require(sdk.raw.unsubscriptions == 1 && sdk.meeting.recording.requests == 1,
+                "Revocation must stop capture without another request");
+      } else if (scenario != 3) {
+        sdk.meeting.recording.listener->onLocalRecordingPrivilegeRequestStatus(
+            scenario == 1 ? RequestLocalRecording_Denied : RequestLocalRecording_Timeout);
+        session.tick();
+        require(sdk.raw.subscriptions == 0 && sdk.meeting.recording.requests == 1,
+                "Denial and timeout must not authorize capture or repeat requests");
+        if (scenario == 1) {
+          sdk.meeting.recording.permission = SDKERR_SUCCESS;
+          sdk.meeting.audio.listener->onUserAudioStatusChange(nullptr, nullptr); session.tick();
+          require(sdk.raw.subscriptions == 0, "A denied response requires an explicit later grant");
+          sdk.meeting.recording.listener->onRecordPrivilegeChanged(true); session.tick();
+          require(sdk.raw.subscriptions == 1, "A later explicit grant may authorize a denied attendee");
+        }
+      }
+      session.stop("test_stop");
+    }
+    capture.close();
+    int requests = 0;
+    for (const auto& event : output.events("sdk.operation"))
+      if (event["data"]["operation"] == "request_local_recording_privilege") {
+        ++requests;
+        require(event["data"]["result"] == (scenario == 3 ? SDKERR_NO_PERMISSION : SDKERR_SUCCESS),
+                "The request operation must preserve its SDK result");
+      }
+    require(requests == 1, "Journal the permission request exactly once");
   }
 }
 
@@ -376,10 +430,11 @@ void real_pcm_fixture_through_sdk_callbacks() {
 int main() {
   try {
     rejected_auth_never_joins(); sdk_permission_controls_recording();
+    attendee_requests_recording_once_and_waits_for_grant();
     revocation_stops_and_grant_resumes(); reconnect_and_role_changes_preserve_permissions(); delayed_audio_and_subscription_failure();
     combined_recording_notices();
     real_pcm_fixture_through_sdk_callbacks();
-    std::cout << "11 SDK adapter scenarios passed (test doubles, no live meeting)\n";
+    std::cout << "15 SDK adapter scenarios passed (test doubles, no live meeting)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

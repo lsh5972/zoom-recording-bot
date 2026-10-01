@@ -50,6 +50,11 @@ ZoomSession::ZoomSession(JoinConfig config, CaptureRuntime& capture)
     if (!allowed) receiving_ = false;
     defer([this] { try_recording(); });
   };
+  recording_events_.after_onLocalRecordingPrivilegeRequestStatus = [this](RequestLocalRecordingStatus status) {
+    if (status == RequestLocalRecording_Granted) denied_ = false;
+    if (status == RequestLocalRecording_Denied) { denied_ = true; receiving_ = false; }
+    defer([this] { try_recording(); });
+  };
   audio_events_.after_onUserAudioStatusChange = [this](IList<IUserAudioStatus*>*, const zchar_t*) {
     defer([this] {
       auto* self = participants_ ? participants_->GetMySelfUser() : nullptr;
@@ -192,7 +197,7 @@ void ZoomSession::join() {
   user.isAudioRawDataStereo = false;
   user.eAudioRawdataSamplingRate = AudioRawdataSamplingRate_32K;
   join_requested_ = true;
-  check(meeting_->Join(params), "join_with_host_zak");
+  check(meeting_->Join(params), "join_with_user_zak");
 }
 
 void ZoomSession::register_events(bool required) {
@@ -311,6 +316,16 @@ void ZoomSession::try_recording() {
   if (state != previous_permission_) { capture_.event("recording.permission", state); previous_permission_ = state; }
   if (!self || denied_ || permission != SDKERR_SUCCESS) {
     if (recording_started_ || subscribed_) pause_recording("recording_permission_lost");
+    if (self && !denied_ && permission == SDKERR_NO_PERMISSION &&
+        role == USERROLE_ATTENDEE && !recording_privilege_requested_) {
+      const auto supported = recording_->IsSupportRequestLocalRecordingPrivilege();
+      if (supported == SDKERR_SUCCESS) {
+        recording_privilege_requested_ = true;
+        const auto requested = recording_->RequestLocalRecordingPrivilege();
+        capture_.event("sdk.operation", {{"operation", "request_local_recording_privilege"},
+                                         {"result", sdk_value(requested)}});
+      }
+    }
     return;
   }
   if (subscribed_) return;
