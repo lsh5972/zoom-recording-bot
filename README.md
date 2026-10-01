@@ -1,26 +1,29 @@
 # Zoom bot
 
-우리 Zoom 계정이 주최하는 회의에 호스트 ZAK로 들어가는 봇.
+우리 Zoom 계정이 주최하는 회의에 전용 봇 사용자 ZAK로 들어가는 봇.
 Ruby는 인증·실행을 담당하고, 공식 Linux Meeting SDK를 사용하는 C++ worker가
 실시간 음성·이벤트를 처리하는 구조다. RTMS, PostgreSQL, Rails는 사용하지 않는다.
 
 ## 현재 구현 상태
 
-구현: S2S OAuth, 회의의 실제 호스트 조회, 해당 호스트의 ZAK 발급 요청,
+구현: S2S OAuth, 회의의 실제 호스트 조회, 설정한 봇 사용자의 ZAK 발급 요청,
 SDK JWT 서명, 비공개 세션 파일 생성, Docker 실행·정지 명령.
 SDK와 독립된 C++ 음성 엔진은 사용자별 PCM → WebRTC VAD → 발화별 WAV,
 speech_on/off·청크 이벤트 기록까지 처리한다. Ruby 전송기는 완성된 WAV를 건별 POST하고
 성공한 위치를 파일에 저장한다.
 HTTP 오류에서 응답 원문을 출력하지 않고, 401은 토큰 갱신 후 한 번만 재시도한다.
 
-SDK 연결 코드와 Dockerfile도 구현했다. SDK 인증 → 호스트 `userZAK` 입장 → 실제 역할·
+SDK 연결 코드와 Dockerfile도 구현했다. SDK 인증 → 봇 사용자 `userZAK` 입장 → 실제 역할·
 raw recording 권한 확인 → 사용자별 PCM 콜백을 음성 엔진에 연결한다.
 공개 공식 API 헤더 기준으로 macOS와 Ubuntu 22.04 ARM64 컨테이너에서 컴파일·테스트했다.
 SDK 테스트는 서비스 응답을 대체하며 실제 음성 fixture를 콜백부터 WAV까지 처리한다.
 실제 Linux-All SDK 7.2.1 (5860)을 Linux ARM64 Docker에서 링크·실행했다.
-실제 S2S 인증·회의 호스트 조회·ZAK 발급·SDK 인증·공동 호스트 입장·VoIP 연결까지 확인했다.
-현재 실제 회의에서는 로컬 녹음 권한 확인은 성공하지만 raw 녹음 시작은 오류 2,
-raw 오디오 구독은 오류 12를 반환한다. **실제 회의의 WAV 생성은 아직 검증되지 않았다.**
+실제 S2S 인증·회의 호스트 조회·봇 사용자 ZAK 발급·SDK 인증·일반 참가자 입장·VoIP 연결을 확인했다.
+클라우드 녹화를 유지한 회의에서 SDK 녹화 권한 요청 → 승인 응답 → raw 녹음 시작·구독까지 성공했다.
+실제 화자 PCM으로 32kHz·mono·16bit WAV 두 개와 speech_on/off·청크 이벤트를 생성하고
+독립 디코더로 프레임 수·음성 샘플을 확인했다. 동시 다화자의 실제 회의 검증은 아직 하지 않았다.
+SDK가 연속 10ms PCM에 같은 타임스탬프를 전달하는 경우도 모든 샘플을 보존하도록 보정한다.
+이전 실제 worker 종료에서 SDK 정리 중 종료 코드 139가 발생했다. 종료 안정성은 아직 검증되지 않았다.
 
 ## 실행 환경과 설정
 
@@ -32,17 +35,32 @@ raw 오디오 구독은 오류 12를 반환한다. **실제 회의의 WAV 생성
 | 앱 | 환경변수 | 역할 |
 | --- | --- | --- |
 | Meeting SDK를 활성화한 General App | `ZOOM_SDK_CLIENT_ID`, `ZOOM_SDK_CLIENT_SECRET` | SDK JWT 서명 |
-| 호스트와 같은 계정의 Server-to-Server OAuth App | `ZOOM_S2S_ACCOUNT_ID`, `ZOOM_S2S_CLIENT_ID`, `ZOOM_S2S_CLIENT_SECRET` | 회의 조회·호스트 ZAK 발급 |
+| 호스트·봇 사용자와 같은 계정의 Server-to-Server OAuth App | `ZOOM_S2S_ACCOUNT_ID`, `ZOOM_S2S_CLIENT_ID`, `ZOOM_S2S_CLIENT_SECRET` | 회의 조회·봇 사용자 ZAK 발급 |
 
 S2S 앱에 필요한 범위:
 
 - `meeting:read:meeting:admin`: `GET /v2/meetings/{meetingId}`
-- `user:read:token:admin`: `GET /v2/users/{hostId}/token?type=zak`
+- `user:read:token:admin`: `GET /v2/users/{botUserEmail}/token?type=zak`
 
 SDK와 S2S의 Client ID/Secret은 서로 바꿔 쓰지 않는다.
 ZAK 발급은 S2S OAuth와 Zoom REST API만 사용한다. SDK 파일·SDK 인증은 필요 없다.
 `prepare`는 ZAK 발급 뒤 SDK JWT도 준비하므로 설정에 두 앱의 자격증명을 모두 요구한다.
 ZAK는 사용자 인증 정보이며, 녹음 가능 여부는 입장 후 별도로 확인해야 한다.
+
+`ZOOM_BOT_USER_EMAIL`에는 같은 Zoom 계정에 속한 전용 봇 사용자 이메일을 입력한다.
+호스트 ZAK를 대신 사용하거나 호스트·공동 호스트 역할을 요구하지 않는다.
+SDK JWT는 앱 인증, 봇 사용자 ZAK는 그 사용자의 Zoom identity로 입장하기 위한 인증이다.
+Linux SDK의 `SDK_UT_WITHOUT_LOGIN` + `userZAK` 입장과 SDK의 상시 SSO 로그인 세션은 별개다.
+[공식 인증 문서](https://developers.zoom.us/docs/meeting-sdk/auth/)
+
+호스트에게 적용되는 `Record to computer files` 설정에서 `Internal meeting participants`와
+`Auto approve their permission requests`를 켜면 내부 참가자의 녹화 요청을 자동 승인할 수 있다.
+SDK는 권한이 없는 일반 참가자일 때 지원 여부를 확인하고 회의당 한 번만 요청한다.
+승인 응답·`CanStartRawRecording` 성공을 확인한 뒤 캡처하며, 거절·타임아웃·권한 철회를 우회하지 않는다.
+Licensed 사용자라는 사실만으로 녹화 권한이 자동 부여되었다고 가정하지 않는다.
+현재 실제 승인에 적용된 세부 정책이 Internal 규칙인지 다른 규칙인지는 확인되지 않았다.
+기존 S2S의 두 범위만 사용하며 계정 설정이나 클라우드 녹화를 변경하지 않는다.
+[공식 컴퓨터 녹화 설정](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0063640)
 
 ```sh
 cp .env.example .env
@@ -60,7 +78,7 @@ ruby bin/zoom-bot check
 ruby bin/zoom-bot prepare 12345678901
 ```
 
-`prepare`는 Zoom API로 회의와 호스트를 조회하고 새 ZAK·JWT를 준비한다.
+`prepare`는 Zoom API로 회의와 호스트를 조회하고 설정한 봇 사용자의 새 ZAK·JWT를 준비한다.
 회의에 입장하지 않으며, 반환된 토큰을 출력하지 않는다.
 `runs/<session_id>/join.json`에 필요한 단기 인증 정보를 저장한다.
 디렉터리는 `0700`, 파일은 `0600`으로 생성한다. `.env`, `runs/`, `vendor/`는 Git에서 제외한다.
@@ -132,8 +150,8 @@ ruby bin/zoom-bot stop SESSION_ID
 
 worker의 처리 순서:
 
-1. SDK JWT 인증 → `userZAK`로 입장 → 실제 호스트/공동 호스트 역할 확인.
-2. `CanStartRawRecording` 확인 → `StartRawRecording` → 사용자별 PCM 구독.
+1. SDK JWT 인증 → 봇 사용자 `userZAK`로 입장 → VoIP 연결.
+2. `CanStartRawRecording` 확인 → 필요하면 녹화 권한 요청·승인 대기 → `StartRawRecording` → 사용자별 PCM 구독.
 3. SDK 콜백에서 버퍼를 복사·큐잉하고, 별도 처리 루프에서 저장·VAD 수행.
 4. 권한 철회·퇴장·종료 시 수집 중단, 진행 중 청크와 이벤트 마감.
 
@@ -144,7 +162,7 @@ SIGTERM은 SDK main thread에서 raw 구독·녹음을 종료하고 `LEAVE_MEETI
 SDK 정리 후 큐를 비우고 WAV·이벤트를 마감한다. 기존 다른 회의를 종료하라는 요청은 취소한다.
 
 호스트가 먼저 들어온 경우, 봇이 먼저 들어온 경우, 재접속한 경우를 각각 실제 회의로 검증해야 한다.
-호스트 ZAK만으로 녹음 권한이나 기존 호스트와의 동시 입장이 보장된다고 가정하지 않는다.
+봇 사용자 ZAK만으로 녹화 권한이 보장된다고 가정하지 않는다.
 
 ## 음성·이벤트 처리
 
@@ -177,7 +195,13 @@ runs/<session_id>/output/
 ```
 
 시간은 봇의 첫 회의 입장을 `00:00:00`으로 놓은 공통 상대 시간이다. SDK의 밀리초 PCM timestamp에
-하나의 공통 offset을 적용한다. 봇 입장 전 실제 회의 시작과의 차이는 현재 얻지 않는다.
+하나의 공통 offset을 적용한 뒤 화자별 샘플 수로 한 프레임 이내의 timestamp 흔들림을 보정한다.
+봇 입장 전 실제 회의 시작과의 차이는 현재 얻지 않는다. **실제 Zoom 회의 시작 기준의 시간축은 아직 미구현이다.**
+전사 시각은 WAV 청크의 `start_ms`에 ASR의 WAV 내부 시각을 더해 계산한다.
+`speech_start_ms`는 VAD가 감지한 발화 시작이고, WAV의 `start_ms`는 pre-roll을 포함하므로 서로 다를 수 있다.
+일반 회의 조회의 `start_time`을 실제 시작으로 간주하지 않는다. 현재 S2S로 일반 회의 조회는 성공하지만
+진행 중 회의의 실제 시작을 제공하는 Dashboard 조회는 권한 오류 4711을 반환했다.
+[Zoom 공식 실제 시작 시각 안내](https://devforum.zoom.us/t/is-there-any-way-to-distinguish-meeting-has-limitation-or-not/44599/4)
 파일명의 초 단위 표시는 소수부를 버리며, JSON의 밀리초 값이 정확한 기준이다.
 같은 초에 여러 청크가 생겨도 화자 세션과 순번으로 충돌하지 않는다.
 
