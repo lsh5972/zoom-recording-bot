@@ -211,20 +211,22 @@ void rejected_auth_never_joins() {
   require(sdk.cleanup == 1, "SDK must clean up after auth failure");
 }
 
-void role_and_permission_are_both_required() {
-  for (int mode = 0; mode < 2; ++mode) {
+void sdk_permission_controls_recording() {
+  for (int mode = 0; mode < 3; ++mode) {
     Backend sdk; backend = &sdk; Output output;
-    if (mode == 0) sdk.meeting.participants.self.role = USERROLE_ATTENDEE;
-    else sdk.meeting.recording.permission = SDKERR_NO_PERMISSION;
+    if (mode != 1) sdk.meeting.participants.self.role = USERROLE_ATTENDEE;
+    if (mode != 0) sdk.meeting.recording.permission = SDKERR_NO_PERMISSION;
     CaptureRuntime capture(output.root, "session");
     {
       ZoomSession session(config(), capture); admit(session, sdk);
-      require(sdk.meeting.recording.starts == 0 && sdk.raw.subscriptions == 0,
-              "Host ZAK must not bypass actual role or raw recording permission");
+      require(sdk.meeting.recording.starts == (mode == 0 ? 1 : 0) &&
+              sdk.raw.subscriptions == (mode == 0 ? 1 : 0),
+              "SDK recording approval must permit attendees and deny unauthorized hosts");
       session.stop("test_stop");
     }
     capture.close();
-    require(output.events("capture.started").empty(), "Denied recording must never report capture success");
+    require(output.events("capture.started").size() == (mode == 0 ? 1 : 0),
+            "Capture success must match SDK recording permission");
   }
 }
 
@@ -248,17 +250,21 @@ void revocation_stops_and_grant_resumes() {
   require(output.events("capture.started").size() == 2, "Each successful subscription needs a capture event");
 }
 
-void reconnect_and_role_loss_stop_capture() {
+void reconnect_and_role_changes_preserve_permissions() {
   Backend sdk; backend = &sdk; Output output;
   CaptureRuntime capture(output.root, "session");
   {
     ZoomSession session(config(), capture); admit(session, sdk);
     sdk.meeting.participants.self.role = USERROLE_ATTENDEE;
     sdk.meeting.participants.listener->onHostChangeNotification(42); session.tick();
-    require(sdk.raw.unsubscriptions == 1, "Losing host/cohost role must stop collection");
+    require(sdk.raw.unsubscriptions == 0, "Role changes must preserve explicitly authorized capture");
+    sdk.meeting.recording.listener->onRecordPrivilegeChanged(false); session.tick();
+    require(sdk.raw.unsubscriptions == 1, "Revoked attendee permission must stop collection");
     sdk.meeting.participants.self.role = USERROLE_COHOST;
     sdk.meeting.participants.listener->onCoHostChangeNotification(1, true); session.tick();
-    require(sdk.raw.subscriptions == 2, "Actual cohost role with permission must resume collection");
+    require(sdk.raw.subscriptions == 1, "A role change must not override revoked recording permission");
+    sdk.meeting.recording.listener->onRecordPrivilegeChanged(true); session.tick();
+    require(sdk.raw.subscriptions == 2, "Restored SDK permission must resume collection");
     sdk.meeting.listener->onMeetingStatusChanged(MEETING_STATUS_RECONNECTING, 0); session.tick();
     require(sdk.raw.unsubscriptions == 2, "Reconnect must close the previous raw subscription");
     sdk.meeting.participants.users.items = {1, 42};  // Bob leaves while transport callbacks are unavailable.
@@ -369,8 +375,8 @@ void real_pcm_fixture_through_sdk_callbacks() {
 
 int main() {
   try {
-    rejected_auth_never_joins(); role_and_permission_are_both_required();
-    revocation_stops_and_grant_resumes(); reconnect_and_role_loss_stop_capture(); delayed_audio_and_subscription_failure();
+    rejected_auth_never_joins(); sdk_permission_controls_recording();
+    revocation_stops_and_grant_resumes(); reconnect_and_role_changes_preserve_permissions(); delayed_audio_and_subscription_failure();
     combined_recording_notices();
     real_pcm_fixture_through_sdk_callbacks();
     std::cout << "11 SDK adapter scenarios passed (test doubles, no live meeting)\n";

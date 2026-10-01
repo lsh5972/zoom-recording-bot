@@ -298,7 +298,6 @@ void ZoomSession::try_recording() {
   if (!in_meeting_ || done_) return;
   auto* self = participants_->GetMySelfUser();
   const auto role = self ? self->GetUserRole() : USERROLE_NONE;
-  const bool authorized_role = self && (self->IsHost() || role == USERROLE_COHOST);
   // CanStartRawRecording checks starting authority. During capture, revocation comes from the SDK event.
   const auto permission = subscribed_ ? SDKERR_SUCCESS : recording_->CanStartRawRecording();
   const auto local_permission = self ? recording_->CanStartRecording(false, self->GetUserID()) : SDKERR_NO_PERMISSION;
@@ -310,7 +309,7 @@ void ZoomSession::try_recording() {
                           {"raw_recording_result", static_cast<int>(permission)}, {"privilege_revoked", denied_.load()},
                           {"permission_source", subscribed_ ? "active_subscription_and_privilege_events" : "can_start_raw_recording"}};
   if (state != previous_permission_) { capture_.event("recording.permission", state); previous_permission_ = state; }
-  if (!authorized_role || denied_ || permission != SDKERR_SUCCESS) {
+  if (!self || denied_ || permission != SDKERR_SUCCESS) {
     if (recording_started_ || subscribed_) pause_recording("recording_permission_lost");
     return;
   }
