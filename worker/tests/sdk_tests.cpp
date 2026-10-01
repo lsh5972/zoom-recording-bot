@@ -74,17 +74,21 @@ struct Auth : IAuthServiceStub {
   SDKError SetEvent(IAuthServiceEvent* value) override { listener = value; return SDKERR_SUCCESS; }
   SDKError SDKAuth(AuthContext& context) override { jwt = context.jwt_token; return SDKERR_SUCCESS; }
 };
-struct Raw : IZoomSDKAudioRawDataHelperStub {
+template <typename Signature> struct RawHelper;
+template <typename... SessionArgs>
+struct RawHelper<SDKError (IZoomSDKAudioRawDataHelper::*)(IZoomSDKAudioRawDataDelegate*, bool, SessionArgs...)>
+    : IZoomSDKAudioRawDataHelperStub {
   IZoomSDKAudioRawDataDelegate* delegate = nullptr;
   SDKError result = SDKERR_SUCCESS;
   int subscriptions = 0, unsubscriptions = 0;
-  SDKError subscribe(IZoomSDKAudioRawDataDelegate* value, bool, ZoomSDKSessionSource) override {
+  SDKError subscribe(IZoomSDKAudioRawDataDelegate* value, bool, SessionArgs...) override {
     ++subscriptions;
     if (result == SDKERR_SUCCESS) delegate = value;
     return result;
   }
-  SDKError unSubscribe(ZoomSDKSessionSource) override { ++unsubscriptions; delegate = nullptr; return SDKERR_SUCCESS; }
+  SDKError unSubscribe(SessionArgs...) override { ++unsubscriptions; delegate = nullptr; return SDKERR_SUCCESS; }
 };
+using Raw = RawHelper<decltype(&IZoomSDKAudioRawDataHelper::subscribe)>;
 struct Meeting : IMeetingServiceStub {
   IMeetingServiceEvent* listener = nullptr;
   Participants participants;
