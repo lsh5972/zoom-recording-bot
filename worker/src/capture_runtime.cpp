@@ -141,9 +141,9 @@ void CaptureRuntime::consume() noexcept {
               previous->second.channels == packet.channels && source >= previous->second.last_source_ms) {
             auto& clock = previous->second;
             const auto expected = clock.origin_ms + static_cast<int64_t>(clock.frames * 1000 / clock.rate);
-            // SDK timestamps can repeat for consecutive 10ms frames. Preserve every sample;
-            // smooth only one frame of timestamp jitter, leaving real gaps/backwards time to the pipeline.
-            if (std::llabs(packet.start_ms - expected) <= duration + 1) {
+            // A callback burst may share one timestamp across several 10ms frames.
+            // Preserve each frame; only smooth one frame of jitter when the timestamp advances.
+            if (source == clock.last_source_ms || std::llabs(packet.start_ms - expected) <= duration + 1) {
               packet.start_ms = expected;
               clock.frames += packet.samples.size() / packet.channels;
               clock.last_source_ms = source;

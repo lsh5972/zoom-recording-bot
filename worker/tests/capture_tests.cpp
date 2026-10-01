@@ -48,12 +48,12 @@ int main() {
       for (const auto& event : output.events()) if (event["type"] == "participant.joined") ++joins;
       require(joins == 2, "A permission pause must preserve speaker sessions rather than fabricate rejoins");
     }
-    {
+    for (int burst : {2, 3, 7}) {
       Output output;
       CaptureRuntime capture(output.root, "session");
       capture.admitted();
       for (int i = 0; i < 30; ++i) {
-        const auto timestamp = 9000 + (i / 2) * 20 + (i / 2) % 2;
+        const auto timestamp = 9000 + (i / burst) * burst * 10 + (i / burst) % 2;
         capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, timestamp);
         capture.pcm({73, 32000, 1, 0, std::vector<int16_t>(320, 0)}, timestamp);
       }
@@ -100,7 +100,7 @@ int main() {
         require(std::string(error.what()) == "Invalid or unreadable join configuration", "Config errors must redact parser text");
       }
     }
-    std::cout << "6 capture/config cases passed\n";
+    std::cout << "8 capture/config cases passed\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
