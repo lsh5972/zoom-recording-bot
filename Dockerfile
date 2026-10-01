@@ -3,8 +3,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libgtkmm-3.0-1v5 libx11-xcb1 libxcb-xfixes0 libxcb-shape0 \
     libxcb-shm0 libxcb-randr0 libxcb-image0 libxcb-keysyms1 libxcb-xtest0 \
     libdbus-1-3 libglib2.0-0 libgbm1 libxfixes3 libgl1 libdrm2 libgssapi-krb5-2 \
-    libegl1 libsdl2-2.0-0 libcurl4 libasound2 libasound2-plugins libsndfile1 \
-    dbus pulseaudio pulseaudio-utils \
+    libegl1 libsdl2-2.0-0 libcurl4 libasound2 libasound2-plugins libsndfile1 libatomic1 \
+    dbus pulseaudio pulseaudio-utils pciutils \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 FROM runtime AS build
