@@ -6,7 +6,9 @@ require_relative '../lib/zoom_bot'
 
 module TestFixtures
   def settings
-    ZoomBot::Settings.new(ZoomBot::Settings::KEYS.to_h { |key| [key, "fixture-#{key}"] })
+    values = ZoomBot::Settings::KEYS.to_h { |key| [key, "fixture-#{key}"] }
+    values['ZOOM_BOT_USER_EMAIL'] = 'recorder+bot@example.com'
+    ZoomBot::Settings.new(values)
   end
 
   class FakeHttp

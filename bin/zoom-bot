@@ -8,7 +8,7 @@ begin
   case command
   when 'check'
     ZoomBot::Settings.new
-    puts 'Required credential variables are present. No Zoom authentication or SDK test performed.'
+    puts 'Required environment variables are present. No Zoom authentication or SDK test performed.'
   when 'prepare', 'run'
     raise ZoomBot::Error, "Usage: bin/zoom-bot #{command} MEETING_ID" unless ARGV.length == 1
     meeting_id = ZoomBot::SessionPreparer.normalize_id(ARGV.first)
@@ -20,13 +20,14 @@ begin
     tokens = ZoomBot::AccessTokenProvider.new(settings)
     api = ZoomBot::ZoomApiClient.new(tokens)
     signatures = ZoomBot::SdkSignature.new(settings)
-    preparer = ZoomBot::SessionPreparer.new(api, signatures, root: File.expand_path('../runs', __dir__))
+    preparer = ZoomBot::SessionPreparer.new(api, signatures, root: File.expand_path('../runs', __dir__),
+                                          bot_user_email: settings.fetch('ZOOM_BOT_USER_EMAIL'))
     session = preparer.prepare(meeting_id)
     if command == 'run'
       name = supervisor.start(session)
       puts "Container launched: #{name}. Meeting admission and recording permission are not yet verified."
     else
-      puts 'Host ZAK and SDK JWT prepared. No bot has joined a meeting.'
+      puts 'Bot user ZAK and SDK JWT prepared. No bot has joined a meeting.'
     end
     puts "Session: #{session.fetch(:session_id)}"
     puts "Private files: #{session.fetch(:directory)}"

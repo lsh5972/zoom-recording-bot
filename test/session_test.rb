@@ -8,10 +8,11 @@ class SessionTest < Minitest::Test
   def preparer(root, http)
     tokens = Struct.new(:token).new('access')
     ZoomBot::SessionPreparer.new(ZoomBot::ZoomApiClient.new(tokens, http: http),
-                                ZoomBot::SdkSignature.new(settings), root: root)
+                                ZoomBot::SdkSignature.new(settings), root: root,
+                                bot_user_email: settings.fetch('ZOOM_BOT_USER_EMAIL'))
   end
 
-  def test_prepare_uses_actual_meeting_host_and_keeps_secrets_private
+  def test_prepare_uses_bot_email_zak_and_keeps_actual_host_and_secrets_private
     http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'actual-host', 'password' => 'meeting-secret' },
                         { 'token' => 'secret-zak' })
     Dir.mktmpdir do |root|
@@ -20,11 +21,12 @@ class SessionTest < Minitest::Test
       join = JSON.parse(File.read(path))
       assert_equal result[:session_id], join['session_id']
       assert_equal 'actual-host', join['host_user_id']
+      assert_equal 'recorder+bot@example.com', join['bot_user_email']
       assert_equal 'secret-zak', join['user_zak']
       assert_equal 'meeting-secret', join['passcode']
       assert_equal 0o600, File.stat(path).mode & 0o777
       assert_equal 0o700, File.stat(result[:directory]).mode & 0o777
-      assert_equal '/v2/users/actual-host/token', http.requests.last.first.path
+      assert_equal '/v2/users/recorder%2Bbot%40example.com/token', http.requests.last.first.path
       refute_includes File.read(File.join(result[:directory], 'session.json')), 'secret'
       refute_includes File.read(path), settings.fetch('ZOOM_S2S_CLIENT_SECRET')
       refute_includes File.read(path), settings.fetch('ZOOM_SDK_CLIENT_SECRET')

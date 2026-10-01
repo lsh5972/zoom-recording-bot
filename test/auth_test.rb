@@ -58,7 +58,7 @@ class AuthTest < Minitest::Test
     provider = Struct.new(:token).new('access')
     http = FakeHttp.new({ 'token' => 'host-zak' })
     api = ZoomBot::ZoomApiClient.new(provider, http: http)
-    assert_equal 'host-zak', api.host_zak('host/name+one')
+    assert_equal 'host-zak', api.user_zak('host/name+one')
     assert_equal 'https://api.zoom.us/v2/users/host%2Fname%2Bone/token?type=zak', http.requests.first.first.to_s
   end
 
@@ -72,7 +72,7 @@ class AuthTest < Minitest::Test
     tokens = ZoomBot::AccessTokenProvider.new(credentials, http: oauth)
     api = ZoomBot::ZoomApiClient.new(tokens, http: http)
     host = api.meeting('123456789').fetch('host_id')
-    assert_equal 'host-zak', api.host_zak(host)
+    assert_equal 'host-zak', api.user_zak(host)
     assert_equal 1, oauth.requests.length
     assert_equal 2, http.requests.length
     assert_equal 'Bearer s2s-access', http.requests.last.last['Authorization']
@@ -83,6 +83,16 @@ class AuthTest < Minitest::Test
     assert_includes error.message, 'ZOOM_S2S_ACCOUNT_ID'
     refute_includes error.message, 'private-value'
     refute_includes settings.inspect, 'fixture-'
+  end
+
+  def test_invalid_bot_email_reports_no_value
+    values = ZoomBot::Settings::KEYS.to_h { |key| [key, settings.fetch(key)] }
+    ['private-not-an-email', "bot@example.com\nextra", 'bot@@example.com'].each do |email|
+      values['ZOOM_BOT_USER_EMAIL'] = email
+      error = assert_raises(ZoomBot::Error) { ZoomBot::Settings.new(values) }
+      assert_includes error.message, 'ZOOM_BOT_USER_EMAIL'
+      refute_includes error.message, email
+    end
   end
 
   def test_invalid_oauth_response_fails_closed

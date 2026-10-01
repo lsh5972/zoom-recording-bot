@@ -2,10 +2,11 @@
 
 module ZoomBot
   class SessionPreparer
-    def initialize(api, signatures, root:, clock: -> { Time.now })
+    def initialize(api, signatures, root:, bot_user_email:, clock: -> { Time.now })
       @api = api
       @signatures = signatures
       @root = File.expand_path(root)
+      @bot_user_email = bot_user_email
       @clock = clock
     end
 
@@ -16,11 +17,11 @@ module ZoomBot
       host_id = meeting['host_id']
       raise Error, 'Meeting response lacks host_id' unless host_id.is_a?(String) && !host_id.empty?
 
-      # The host comes from Zoom, never from a caller-provided user ID.
-      zak = @api.host_zak(host_id)
+      zak = @api.user_zak(@bot_user_email)
       session_id = SecureRandom.uuid
       credentials = {
         schema_version: 1, session_id: session_id, meeting_id: meeting_id, host_user_id: host_id,
+        bot_user_email: @bot_user_email,
         passcode: meeting.fetch('password', '').to_s, display_name: 'Meeting Recorder',
         sdk_jwt: @signatures.issue, user_zak: zak, prepared_at: @clock.call.utc.iso8601
       }
@@ -30,7 +31,8 @@ module ZoomBot
       FileUtils.mkdir_p(File.join(directory, 'output'), mode: 0o700)
       write(File.join(directory, 'join.json'), credentials)
       metadata = { schema_version: 1, session_id: session_id, meeting_id: meeting_id,
-                   host_user_id: host_id, state: 'prepared', prepared_at: credentials[:prepared_at] }
+                   host_user_id: host_id, bot_user_email: @bot_user_email,
+                   state: 'prepared', prepared_at: credentials[:prepared_at] }
       write(File.join(directory, 'session.json'), metadata)
       { session_id: session_id, directory: directory }
     end

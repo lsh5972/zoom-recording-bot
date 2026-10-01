@@ -11,8 +11,8 @@ module ZoomBot
       get("/meetings/#{meeting_id}")
     end
 
-    def host_zak(host_id)
-      encoded_id = URI.encode_www_form_component(host_id).gsub('+', '%20')
+    def user_zak(user_id)
+      encoded_id = URI.encode_www_form_component(user_id).gsub('+', '%20')
       body = get("/users/#{encoded_id}/token?type=zak")
       token = body['token']
       raise Error, 'Zoom user token response lacks ZAK' unless token.is_a?(String) && !token.empty?

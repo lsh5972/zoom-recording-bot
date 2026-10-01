@@ -19,7 +19,7 @@ module ZoomBot
     def start(session)
       directory = File.realpath(session.fetch(:directory))
       name = "zoom-bot-#{session.fetch(:session_id)}"
-      # Host tokens travel in a private read-only file, never argv or Docker env.
+      # User tokens travel in a private read-only file, never argv or Docker env.
       _out, _err, status = @command.call(
         'docker', 'run', '--detach', '--pull=never', '--name', name,
         '--label', "zoom-bot.session=#{session.fetch(:session_id)}",
