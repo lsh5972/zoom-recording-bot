@@ -1,7 +1,9 @@
 #include "zoom_bot/capture_runtime.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
+#include <map>
 #include <optional>
 
 namespace zoom_bot {
@@ -81,6 +83,12 @@ void CaptureRuntime::close() {
 
 void CaptureRuntime::consume() noexcept {
   std::optional<int64_t> source_offset;
+  struct SourceClock {
+    int rate, channels;
+    int64_t origin_ms, last_source_ms;
+    uint64_t frames;
+  };
+  std::map<uint32_t, SourceClock> source_clocks;
   try {
     for (;;) {
       Item item{};
@@ -107,10 +115,17 @@ void CaptureRuntime::consume() noexcept {
       }
       switch (item.kind) {
         case Kind::Event: events_.append(item.text, item.at_ms, std::move(item.data)); break;
-        case Kind::Joined: audio_.joined(item.packet.user_id, item.text, item.at_ms); break;
-        case Kind::Left: audio_.left(item.packet.user_id, item.at_ms); break;
+        case Kind::Joined:
+          source_clocks.erase(item.packet.user_id);
+          audio_.joined(item.packet.user_id, item.text, item.at_ms);
+          break;
+        case Kind::Left:
+          source_clocks.erase(item.packet.user_id);
+          audio_.left(item.packet.user_id, item.at_ms);
+          break;
         case Kind::Pause:
           audio_.pause(item.text, item.at_ms);
+          source_clocks.clear();
           if (item.text == "reconnecting") source_offset.reset();
           break;
         case Kind::Pcm: {
@@ -121,6 +136,22 @@ void CaptureRuntime::consume() noexcept {
           const auto source = static_cast<int64_t>(item.source_ms);
           if (!source_offset) source_offset = std::max<int64_t>(0, item.at_ms - duration) - source;
           packet.start_ms = source + *source_offset;
+          auto previous = source_clocks.find(packet.user_id);
+          if (previous != source_clocks.end() && previous->second.rate == packet.rate &&
+              previous->second.channels == packet.channels && source >= previous->second.last_source_ms) {
+            auto& clock = previous->second;
+            const auto expected = clock.origin_ms + static_cast<int64_t>(clock.frames * 1000 / clock.rate);
+            // SDK timestamps can repeat for consecutive 10ms frames. Preserve every sample;
+            // smooth only one frame of timestamp jitter, leaving real gaps/backwards time to the pipeline.
+            if (std::llabs(packet.start_ms - expected) <= duration + 1) {
+              packet.start_ms = expected;
+              clock.frames += packet.samples.size() / packet.channels;
+              clock.last_source_ms = source;
+            } else source_clocks.erase(previous);
+          } else if (previous != source_clocks.end()) source_clocks.erase(previous);
+          if (!source_clocks.count(packet.user_id))
+            source_clocks.emplace(packet.user_id, SourceClock{packet.rate, packet.channels, packet.start_ms,
+                                                             source, packet.samples.size() / packet.channels});
           events_.append("sdk.raw_audio.one_way", item.at_ms,
                          {{"user_id", packet.user_id}, {"source_timestamp_ms", source},
                           {"start_ms", packet.start_ms}, {"sample_rate", packet.rate},

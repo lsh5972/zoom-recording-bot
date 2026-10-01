@@ -50,6 +50,39 @@ int main() {
     }
     {
       Output output;
+      CaptureRuntime capture(output.root, "session");
+      capture.admitted();
+      for (int i = 0; i < 30; ++i) {
+        const auto timestamp = 9000 + (i / 2) * 20 + (i / 2) % 2;
+        capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, timestamp);
+        capture.pcm({73, 32000, 1, 0, std::vector<int16_t>(320, 0)}, timestamp);
+      }
+      capture.close();
+      require(!capture.failed(), "Repeated 32kHz timestamps and 1ms jitter must not terminate capture");
+      std::vector<int64_t> alice, bob;
+      for (const auto& event : output.events()) {
+        require(event["type"] != "audio.gap", "One-frame timestamp jitter must not split speech");
+        if (event["type"] == "sdk.raw_audio.one_way")
+          (event["data"]["user_id"] == 42 ? alice : bob).push_back(event["data"]["start_ms"]);
+      }
+      require(alice.size() == 30 && alice == bob, "Keep every quantized frame on the shared speaker timeline");
+      for (size_t i = 1; i < alice.size(); ++i)
+        require(alice[i] - alice[i - 1] == 10, "PCM sample counts must define consecutive frame times");
+    }
+    for (bool backwards : {false, true}) {
+      Output output;
+      CaptureRuntime capture(output.root, "session");
+      capture.admitted();
+      capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, 9000);
+      capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, backwards ? 8990 : 9500);
+      capture.close();
+      require(capture.failed() == backwards, "A backwards source clock must still fail capture");
+      bool gap = false;
+      for (const auto& event : output.events()) if (event["type"] == "audio.gap") gap = true;
+      require(gap == !backwards, "Real timestamp gaps must remain visible rather than be smoothed away");
+    }
+    {
+      Output output;
       CaptureRuntime capture(output.root, "session", 1);
       capture.pcm({1, 16000, 1, 0, std::vector<int16_t>(160, 0)}, 0);
       capture.close();
@@ -67,7 +100,7 @@ int main() {
         require(std::string(error.what()) == "Invalid or unreadable join configuration", "Config errors must redact parser text");
       }
     }
-    std::cout << "3 capture/config cases passed\n";
+    std::cout << "6 capture/config cases passed\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

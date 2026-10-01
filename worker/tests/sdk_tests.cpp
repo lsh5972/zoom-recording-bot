@@ -393,7 +393,8 @@ void real_pcm_fixture_through_sdk_callbacks() {
     List<uint32_t> active; active.items = {42, 73};
     sdk.meeting.audio.listener->onUserActiveAudioChange(&active);
     for (size_t offset = 0; offset < speech.size(); offset += 160) {
-      Packet packet; packet.timestamp = 9000 + offset / 16;
+      // Linux 7.2.1 can deliver two 10ms frames with the same source timestamp.
+      Packet packet; packet.timestamp = 9000 + (offset / 320) * 20;
       packet.samples.assign(speech.begin() + offset, speech.begin() + std::min(offset + 160, speech.size()));
       sdk.raw.delegate->onOneWayAudioRawDataReceived(&packet, 42);
       for (auto& sample : packet.samples) sample /= 2;
@@ -404,6 +405,11 @@ void real_pcm_fixture_through_sdk_callbacks() {
   }
   capture.close();
   require(!capture.failed(), "Copied SDK buffers must remain valid on the consumer");
+  const auto packets = output.events("sdk.raw_audio.one_way");
+  require(packets.size() == ((speech.size() + 159) / 160) * 2,
+          "Repeated SDK timestamps must retain every frame for both speakers");
+  require(output.events("audio.out_of_order").empty() && output.events("audio.gap").empty(),
+          "Quantized SDK timestamps must produce continuous speaker timelines");
   const auto chunks = output.events("audio.chunk_ready");
   std::set<uint32_t> speakers;
   for (const auto& chunk : chunks) {
