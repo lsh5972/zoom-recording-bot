@@ -90,11 +90,33 @@ struct RawHelper<SDKError (IZoomSDKAudioRawDataHelper::*)(IZoomSDKAudioRawDataDe
   SDKError unSubscribe(SessionArgs...) override { ++unsubscriptions; delegate = nullptr; return SDKERR_SUCCESS; }
 };
 using Raw = RawHelper<decltype(&IZoomSDKAudioRawDataHelper::subscribe)>;
+struct Reminder : IMeetingReminderController {
+  IMeetingReminderEvent* listener = nullptr;
+  SDKError SetEvent(IMeetingReminderEvent* value) override { listener = value; return SDKERR_SUCCESS; }
+};
+struct ReminderContent : IMeetingReminderContent {
+  List<MeetingReminderType> types;
+  MeetingReminderType GetType() override { return TYPE_MULTI_DISCLAIMER; }
+  const zchar_t* GetTitle() override { return "Recording notice"; }
+  const zchar_t* GetContent() override { return "This meeting is being recorded."; }
+  bool IsBlocking() override { return true; }
+  ActionType GetActionType() override { return ACTION_TYPE_NONE; }
+  IList<MeetingReminderType>* GetMultiReminderTypes() override { return &types; }
+};
+struct ReminderHandler : IMeetingReminderHandler {
+  int accepted = 0, declined = 0;
+  SDKError Ignore() override { return SDKERR_SUCCESS; }
+  SDKError Accept() override { ++accepted; return SDKERR_SUCCESS; }
+  SDKError Decline() override { ++declined; return SDKERR_SUCCESS; }
+  SDKError SetHideFeatureDisclaimers() override { return SDKERR_SUCCESS; }
+  bool IsNeedExplicitConsent4AICustomDisclaimer() override { return false; }
+};
 struct Meeting : IMeetingServiceStub {
   IMeetingServiceEvent* listener = nullptr;
   Participants participants;
   Recording recording;
   Audio audio;
+  Reminder reminder;
   int joins = 0, starts = 0, leaves = 0;
   uint64_t number = 0;
   std::string zak, password;
@@ -113,6 +135,7 @@ struct Meeting : IMeetingServiceStub {
   IMeetingParticipantsController* GetMeetingParticipantsController() override { return &participants; }
   IMeetingRecordingController* GetMeetingRecordingController() override { return &recording; }
   IMeetingAudioController* GetMeetingAudioController() override { return &audio; }
+  IMeetingReminderController* GetMeetingReminderController() override { return &reminder; }
 };
 struct Backend { Auth auth; Meeting meeting; Settings settings; Raw raw; int cleanup = 0; };
 Backend* backend;
@@ -274,6 +297,29 @@ void delayed_audio_and_subscription_failure() {
   }
 }
 
+void combined_recording_notices() {
+  for (int scenario = 0; scenario < 3; ++scenario) {
+    Backend sdk; backend = &sdk; Output output;
+    CaptureRuntime capture(output.root, "session");
+    {
+      ZoomSession session(config(), capture); admit(session, sdk);
+      ReminderContent content; ReminderHandler handler;
+      if (scenario == 0) content.types.items = {TYPE_RECORD_REMINDER, TYPE_RECORD_DISCLAIMER};
+      if (scenario == 1) content.types.items = {TYPE_RECORD_REMINDER, TYPE_QUERY_DISCLAIMER};
+      sdk.meeting.reminder.listener->onReminderNotify(&content, &handler); session.tick();
+      require(handler.accepted == (scenario == 0) && handler.declined == (scenario != 0),
+              "Accept recording-only combinations; decline AI and unknown combinations");
+      require(session.done() == (scenario != 0), "Blocking unsupported notices must stop capture");
+      session.stop("test_stop");
+    }
+    capture.close();
+    bool preserved = false;
+    for (const auto& e : output.events("sdk.callback")) if (e["data"]["callback"] == "onReminderNotify")
+      preserved = e["data"]["arguments"]["content"]["types"].size() == (scenario == 2 ? 0 : 2);
+    require(preserved, "Copy the component types of a combined reminder into the journal");
+  }
+}
+
 void real_pcm_fixture_through_sdk_callbacks() {
   SF_INFO info{};
   auto* file = sf_open(FVAD_FIXTURE, SFM_READ, &info);
@@ -325,8 +371,9 @@ int main() {
   try {
     rejected_auth_never_joins(); role_and_permission_are_both_required();
     revocation_stops_and_grant_resumes(); reconnect_and_role_loss_stop_capture(); delayed_audio_and_subscription_failure();
+    combined_recording_notices();
     real_pcm_fixture_through_sdk_callbacks();
-    std::cout << "8 SDK adapter scenarios passed (test doubles, no live meeting)\n";
+    std::cout << "11 SDK adapter scenarios passed (test doubles, no live meeting)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

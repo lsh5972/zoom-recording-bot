@@ -68,7 +68,16 @@ ZoomSession::ZoomSession(JoinConfig config, CaptureRuntime& capture)
     if (!content || !handler) return;
     // Routine join/record notices belong to the requested recording flow. Legal/AI consent does not.
     const auto type = content->GetType();
-    if (type == TYPE_START_OR_JOIN_MEETING || type == TYPE_RECORD_REMINDER || type == TYPE_RECORD_DISCLAIMER)
+    auto routine = [](MeetingReminderType type) {
+      return type == TYPE_START_OR_JOIN_MEETING || type == TYPE_RECORD_REMINDER || type == TYPE_RECORD_DISCLAIMER;
+    };
+    bool accept = routine(type);
+    if (type == TYPE_MULTI_DISCLAIMER) {
+      auto* types = content->GetMultiReminderTypes();
+      accept = types && types->GetCount() > 0;
+      if (types) for (int i = 0; i < types->GetCount(); ++i) accept = accept && routine(types->GetItem(i));
+    }
+    if (accept)
       check(handler->Accept(), "accept_recording_notice");
     else if (content->IsBlocking()) {
       handler->Decline();

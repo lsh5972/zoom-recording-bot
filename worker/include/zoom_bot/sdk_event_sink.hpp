@@ -60,11 +60,12 @@ inline nlohmann::json sdk_value(const MeetingParameter* value) {
           {"auto_recording_cloud", value->is_auto_recording_cloud}, {"meeting_number", value->meeting_number},
           {"topic", sdk_value(value->meeting_topic)}, {"host", sdk_value(value->meeting_host)}};
 }
+template <typename T> nlohmann::json sdk_value(IList<T>* list);
 inline nlohmann::json sdk_value(IMeetingReminderContent* value) {
   if (!value) return nullptr;
   return {{"type", sdk_value(value->GetType())}, {"title", sdk_value(value->GetTitle())},
           {"content", sdk_value(value->GetContent())}, {"blocking", value->IsBlocking()},
-          {"action_type", sdk_value(value->GetActionType())}};
+          {"action_type", sdk_value(value->GetActionType())}, {"types", sdk_value(value->GetMultiReminderTypes())}};
 }
 inline nlohmann::json sdk_value(CustomWaitingRoomData& value) {
   return {{"title", sdk_value(value.title)}, {"description", sdk_value(value.description)},
