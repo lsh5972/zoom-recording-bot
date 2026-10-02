@@ -12,6 +12,8 @@ module ZoomBot
 
     def prepare(input)
       meeting_id = self.class.normalize_id(input)
+      directory = File.join(@root, meeting_id)
+      raise Error, 'Meeting directory already exists; existing recording files retained' if File.exist?(directory)
       meeting = @api.meeting(meeting_id)
       raise Error, 'Zoom returned a different meeting ID' unless meeting['id'].to_s == meeting_id
       host_id = meeting['host_id']
@@ -36,15 +38,34 @@ module ZoomBot
         sdk_jwt: @signatures.issue, user_zak: zak, prepared_at: @clock.call.utc.iso8601
       }
 
-      directory = File.join(@root, session_id)
-      FileUtils.mkdir_p(directory, mode: 0o700)
+      FileUtils.mkdir_p(@root, mode: 0o700)
+      begin
+        Dir.mkdir(directory, 0o700)
+      rescue Errno::EEXIST
+        raise Error, 'Meeting directory already exists; existing recording files retained'
+      end
       FileUtils.mkdir_p(File.join(directory, 'output'), mode: 0o700)
       write(File.join(directory, 'join.json'), credentials)
       metadata = { schema_version: 1, session_id: session_id, meeting_id: meeting_id,
                    host_user_id: host_id, bot_user_email: @bot_user_email, meeting_start_unix_ms: meeting_start_unix_ms,
                    state: 'prepared', prepared_at: credentials[:prepared_at] }
       write(File.join(directory, 'session.json'), metadata)
-      { session_id: session_id, directory: directory }
+      { session_id: session_id, meeting_id: meeting_id, directory: directory }
+    end
+
+    def self.locate(input, root:)
+      uuid = /\A[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/
+      identifier = input.to_s.match?(uuid) ? input.to_s : normalize_id(input)
+      directory = File.realpath(File.join(root, identifier))
+      metadata = JSON.parse(File.read(File.join(directory, 'session.json')))
+      session_id = metadata.fetch('session_id')
+      unless session_id.is_a?(String) && session_id.match?(uuid) &&
+             (identifier == session_id || identifier == metadata.fetch('meeting_id'))
+        raise Error, 'Session metadata does not match its meeting directory'
+      end
+      { session_id: session_id, meeting_id: metadata.fetch('meeting_id'), directory: directory }
+    rescue JSON::ParserError, KeyError, TypeError
+      raise Error, 'Invalid private session metadata'
     end
 
     def self.normalize_id(input)

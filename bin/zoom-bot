@@ -24,25 +24,25 @@ begin
                                           bot_user_email: settings.fetch('ZOOM_BOT_USER_EMAIL'))
     session = preparer.prepare(meeting_id)
     if command == 'run'
-      name = supervisor.start(session)
-      puts "Container launched: #{name}. Meeting admission and recording permission are not yet verified."
+      supervisor.start(session)
+      puts 'Container launched. Meeting admission and recording permission are not yet verified.'
     else
       puts 'Bot user ZAK and SDK JWT prepared. No bot has joined a meeting.'
     end
-    puts "Session: #{session.fetch(:session_id)}"
+    puts "Meeting: #{session.fetch(:meeting_id)}"
     puts "Private files: #{session.fetch(:directory)}"
   when 'stop'
-    raise ZoomBot::Error, 'Usage: bin/zoom-bot stop SESSION_ID' unless ARGV.length == 1
-    ZoomBot::BotSupervisor.new(image: 'unused').stop(ARGV.first)
+    raise ZoomBot::Error, 'Usage: bin/zoom-bot stop MEETING_ID' unless ARGV.length == 1
+    session = ZoomBot::SessionPreparer.locate(ARGV.first, root: File.expand_path('../runs', __dir__))
+    ZoomBot::BotSupervisor.new(image: 'unused').stop(session.fetch(:session_id))
     puts 'Container stopped. Output files retained.'
   when 'deliver'
     watch = ARGV.delete('--watch')
-    raise ZoomBot::Error, 'Usage: bin/zoom-bot deliver SESSION_ID [--watch]' unless ARGV.length == 1
-    session_id = ARGV.first
-    raise ZoomBot::Error, 'Invalid session ID' unless session_id.match?(/\A[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/)
+    raise ZoomBot::Error, 'Usage: bin/zoom-bot deliver MEETING_ID [--watch]' unless ARGV.length == 1
+    session = ZoomBot::SessionPreparer.locate(ARGV.first, root: File.expand_path('../runs', __dir__))
     client = ZoomBot::ChunkHttpClient.new(endpoint: ENV['ZOOM_CHUNK_ENDPOINT'],
                                          bearer_token: ENV['ZOOM_CHUNK_BEARER_TOKEN'])
-    output = File.expand_path("../runs/#{session_id}/output", __dir__)
+    output = File.join(session.fetch(:directory), 'output')
     sender = ZoomBot::ChunkDelivery.new(output: output, client: client)
     retry_delay = 1
     loop do
@@ -62,7 +62,7 @@ begin
       end
     end
   else
-    warn 'Usage: ruby bin/zoom-bot check | prepare MEETING_ID | run MEETING_ID | stop SESSION_ID | deliver SESSION_ID [--watch]'
+    warn 'Usage: ruby bin/zoom-bot check | prepare MEETING_ID | run MEETING_ID | stop MEETING_ID | deliver MEETING_ID [--watch]'
     exit 1
   end
 rescue ZoomBot::Error, Errno::ENOENT, Errno::EACCES => error

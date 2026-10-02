@@ -20,6 +20,8 @@ class SessionTest < Minitest::Test
       path = File.join(result[:directory], 'join.json')
       join = JSON.parse(File.read(path))
       assert_equal result[:session_id], join['session_id']
+      assert_equal File.join(root, '123456789'), result[:directory]
+      assert_equal '123456789', result[:meeting_id]
       assert_equal 'actual-host', join['host_user_id']
       assert_equal 'recorder+bot@example.com', join['bot_user_email']
       assert_equal 'secret-zak', join['user_zak']
@@ -69,16 +71,39 @@ class SessionTest < Minitest::Test
     end
   end
 
-  def test_distinct_runs_do_not_reuse_zak_or_overwrite_old_session
+  def test_repeated_meeting_id_does_not_overwrite_recording_or_request_another_zak
     http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host', 'start_time' => '2026-10-01T10:00:00Z' }, { 'token' => 'zak-one' },
-                        { 'id' => 123456789, 'host_id' => 'host', 'start_time' => '2026-10-01T10:00:00Z' }, { 'token' => 'zak-two' })
+                        { 'id' => 987654321, 'host_id' => 'host', 'start_time' => '2026-10-01T10:00:00Z' }, { 'token' => 'zak-two' })
     Dir.mktmpdir do |root|
       service = preparer(root, http)
       one = service.prepare('123456789')
-      two = service.prepare('123456789')
+      File.binwrite(File.join(one[:directory], 'output', 'existing.wav'), 'existing PCM')
+      assert_raises(ZoomBot::Error) { service.prepare('123456789') }
+      assert_equal 2, http.requests.length
+      assert_equal 'existing PCM', File.binread(File.join(one[:directory], 'output', 'existing.wav'))
+      two = service.prepare('987654321')
       refute_equal one[:session_id], two[:session_id]
       assert_equal 'zak-one', JSON.parse(File.read(File.join(one[:directory], 'join.json')))['user_zak']
       assert_equal 'zak-two', JSON.parse(File.read(File.join(two[:directory], 'join.json')))['user_zak']
+      assert_equal one.merge(directory: File.realpath(one[:directory])),
+                   ZoomBot::SessionPreparer.locate('123 456 789', root: root)
+      assert_equal two.merge(directory: File.realpath(two[:directory])),
+                   ZoomBot::SessionPreparer.locate('987654321', root: root)
+    end
+  end
+
+  def test_lookup_preserves_old_uuid_directories_and_rejects_mismatched_metadata
+    Dir.mktmpdir do |root|
+      uuid = '00000000-0000-4000-8000-000000000001'
+      legacy = File.join(root, uuid)
+      Dir.mkdir(legacy)
+      File.write(File.join(legacy, 'session.json'), JSON.generate(session_id: uuid, meeting_id: '123456789'))
+      assert_equal uuid, ZoomBot::SessionPreparer.locate(uuid, root: root)[:session_id]
+      meeting = File.join(root, '123456789')
+      Dir.mkdir(meeting)
+      File.write(File.join(meeting, 'session.json'), JSON.generate(session_id: uuid, meeting_id: '987654321'))
+      assert_raises(ZoomBot::Error) { ZoomBot::SessionPreparer.locate('123456789', root: root) }
+      assert_raises(ZoomBot::Error) { ZoomBot::SessionPreparer.locate('../123456789', root: root) }
     end
   end
 
