@@ -261,6 +261,7 @@ void ZoomSession::users(IList<unsigned int>* ids, bool joined) {
       auto* user = participants_->GetUserByUserID(id);
       capture_.event("participant.snapshot", user_snapshot(user));
       if (known_users_.insert(id).second) capture_.joined(id, name(user));
+      else if (user && !name(user).empty()) capture_.renamed(id, name(user));
     } else if (known_users_.erase(id)) capture_.left(id);
   }
 }

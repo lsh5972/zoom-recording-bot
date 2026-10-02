@@ -35,12 +35,13 @@ struct User : IUserInfoStub {
 struct Participants : IMeetingParticipantsControllerStub {
   IMeetingParticipantsCtrlEvent* listener = nullptr;
   User self{1, USERROLE_HOST, "Bot"}, alice{42, USERROLE_ATTENDEE, "Alice"}, bob{73, USERROLE_ATTENDEE, "Bob"};
+  bool alice_available = true;
   List<uint32_t> users;
   Participants() { users.items = {1, 42, 73}; }
   SDKError SetEvent(IMeetingParticipantsCtrlEvent* value) override { listener = value; return SDKERR_SUCCESS; }
   IUserInfo* GetMySelfUser() override { return &self; }
   IList<uint32_t>* GetParticipantsList() override { return &users; }
-  IUserInfo* GetUserByUserID(uint32_t id) override { return id == 1 ? &self : id == 42 ? &alice : &bob; }
+  IUserInfo* GetUserByUserID(uint32_t id) override { return id == 1 ? &self : id == 42 ? (alice_available ? &alice : nullptr) : &bob; }
 };
 struct Recording : IMeetingRecordingControllerStub {
   IMeetingRecordingCtrlEvent* listener = nullptr;
@@ -471,6 +472,35 @@ void cloud_status_and_renames_reach_the_capture_consumer() {
   require(callbacks == 7, "Duplicate cloud status callbacks must remain in the exhaustive event journal");
 }
 
+void admission_refreshes_names_received_before_user_info() {
+  Backend sdk; backend = &sdk; Output output;
+  CaptureRuntime capture(output.root, "session");
+  {
+    ZoomSession session(config(), capture);
+    session.start(); sdk.auth.listener->onAuthenticationReturn(AUTHRET_SUCCESS); session.tick();
+    sdk.meeting.participants.alice_available = false;
+    List<uint32_t> joined; joined.items = {42};
+    sdk.meeting.participants.listener->onUserJoin(&joined, nullptr);
+    sdk.meeting.participants.alice_available = true;
+    sdk.meeting.participants.alice.name = "수현 이";
+    sdk.meeting.listener->onMeetingStatusChanged(MEETING_STATUS_INMEETING, 0); session.tick();
+    SF_INFO info{};
+    auto* file = sf_open(FVAD_FIXTURE, SFM_READ, &info);
+    require(file != nullptr, "Speech fixture must load");
+    Packet packet; packet.samples.resize(info.frames);
+    sf_readf_short(file, packet.samples.data(), info.frames); sf_close(file);
+    sdk.raw.delegate->onOneWayAudioRawDataReceived(&packet, 42);
+    session.stop("test_stop");
+  }
+  capture.close();
+  const auto renamed = output.events("participant.renamed");
+  require(!renamed.empty() && renamed[0]["data"]["display_name"] == "수현 이",
+          "Admission snapshots must replace empty early names without requiring a name-change callback");
+  const auto chunks = output.events("audio.chunk_ready");
+  require(!chunks.empty() && chunks[0]["data"]["wav_path"].get<std::string>().find("__수현 이__") != std::string::npos,
+          "WAV filenames must use the recovered display name instead of the generic speaker label");
+}
+
 int main() {
   try {
     rejected_auth_never_joins(); sdk_permission_controls_recording();
@@ -479,7 +509,8 @@ int main() {
     combined_recording_notices();
     real_pcm_fixture_through_sdk_callbacks();
     cloud_status_and_renames_reach_the_capture_consumer();
-    std::cout << "16 SDK adapter scenarios passed (test doubles, no live meeting)\n";
+    admission_refreshes_names_received_before_user_info();
+    std::cout << "17 SDK adapter scenarios passed (test doubles, no live meeting)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

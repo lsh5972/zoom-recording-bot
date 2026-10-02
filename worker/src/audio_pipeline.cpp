@@ -47,7 +47,7 @@ void AudioPipeline::joined(uint32_t user_id, const std::string& display_name, in
 
 void AudioPipeline::renamed(uint32_t user_id, const std::string& display_name, int64_t at_ms) {
   auto found = participants_.find(user_id);
-  if (found == participants_.end()) return;
+  if (found == participants_.end() || found->second.display_name == display_name) return;
   found->second.display_name = display_name;
   if (found->second.stream) found->second.stream->segmenter.renamed(display_name);
   events_.append("participant.renamed", at_ms,
