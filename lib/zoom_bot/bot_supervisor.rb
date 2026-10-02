@@ -21,7 +21,7 @@ module ZoomBot
       name = "zoom-bot-#{session.fetch(:session_id)}"
       # User tokens travel in a private read-only file, never argv or Docker env.
       _out, _err, status = @command.call(
-        'docker', 'run', '--detach', '--pull=never', '--name', name,
+        'docker', 'run', '--detach', '--pull=never', '--rm', '--name', name,
         '--label', "zoom-bot.session=#{session.fetch(:session_id)}",
         '--mount', "type=bind,src=#{directory}/join.json,dst=/run/zoom-bot/join.json,readonly",
         '--mount', "type=bind,src=#{directory}/output,dst=/data",

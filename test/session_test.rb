@@ -123,7 +123,7 @@ class SessionTest < Minitest::Test
       assert_equal %w[docker run --detach --pull=never], args.first(4)
       assert args.any? { |argument| argument.end_with?('join.json,readonly') }
       refute_includes args.join(' '), 'never-in-argv'
-      refute_includes args, '--rm'
+      assert_includes args, '--rm'
       supervisor.stop(session[:session_id])
       assert File.directory?(File.join(session[:directory], 'output'))
     end
