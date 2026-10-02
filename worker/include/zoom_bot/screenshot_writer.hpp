@@ -2,6 +2,7 @@
 
 #include "zoom_bot/recording_timeline.hpp"
 #include <filesystem>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <vector>
 
@@ -11,7 +12,7 @@ struct ScreenshotFrame {
   int width = 0, height = 0, rotation = 0;
   bool limited_range = true;
   uint64_t source_ms = 0;
-  std::vector<unsigned char> i420;
+  std::shared_ptr<const std::vector<unsigned char>> i420;
 };
 
 class ScreenshotWriter {
@@ -22,5 +23,7 @@ class ScreenshotWriter {
  private:
   std::filesystem::path output_;
   uint64_t sequence_ = 0;
+  ScreenshotFrame encoded_frame_;
+  std::vector<unsigned char> encoded_jpeg_;
 };
 }  // namespace zoom_bot

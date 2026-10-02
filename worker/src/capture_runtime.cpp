@@ -38,7 +38,7 @@ void CaptureRuntime::fail() noexcept { failed_ = true; ready_.notify_one(); }
 void CaptureRuntime::push(Item item) noexcept {
   try {
     item.bytes = sizeof(Item) + item.text.size() + item.data.dump().size() +
-                 item.packet.samples.size() * sizeof(int16_t) + item.frame.i420.size();
+                 item.packet.samples.size() * sizeof(int16_t) + (item.frame.i420 ? item.frame.i420->size() : 0);
     std::lock_guard<std::mutex> lock(mutex_);
     if (closing_ || failed_) return;
     if (queue_.size() >= 20000 || item.bytes > capacity_ - std::min(bytes_, capacity_)) {

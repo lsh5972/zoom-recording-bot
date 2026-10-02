@@ -28,6 +28,7 @@ void ShareCapture::suspend() {
   std::lock_guard<std::mutex> lock(mutex_);
   receiving_ = false;
   latest_.reset();
+  pixels_.reset();
 }
 
 void ShareCapture::stop() {
@@ -119,6 +120,20 @@ void ShareCapture::onRawDataFrameReceived(YUVRawDataI420* data) {
     if (!width || !height || width > 8192 || height > 8192 || y_size + 2 * uv_size > 32 * 1024 * 1024 ||
         data->GetBufferLen() < y_size + 2 * uv_size || !data->GetYBuffer() || !data->GetUBuffer() || !data->GetVBuffer())
       throw std::runtime_error("Invalid SDK share frame");
+    const auto bytes = y_size + 2 * uv_size;
+    const bool unchanged = pixels_ && pixels_->size() == bytes &&
+        std::memcmp(pixels_->data(), data->GetYBuffer(), y_size) == 0 &&
+        std::memcmp(pixels_->data() + y_size, data->GetUBuffer(), uv_size) == 0 &&
+        std::memcmp(pixels_->data() + y_size + uv_size, data->GetVBuffer(), uv_size) == 0;
+    if (!unchanged) {
+      // pixels_ and latest_ own two references; queued/encoded snapshots must stay immutable.
+      if (!pixels_ || pixels_.use_count() > 2)
+        pixels_ = std::make_shared<std::vector<unsigned char>>();
+      pixels_->resize(bytes);
+      std::memcpy(pixels_->data(), data->GetYBuffer(), y_size);
+      std::memcpy(pixels_->data() + y_size, data->GetUBuffer(), uv_size);
+      std::memcpy(pixels_->data() + y_size + uv_size, data->GetVBuffer(), uv_size);
+    }
     if (!latest_) latest_.emplace();
     auto& frame = *latest_;
     frame.user_id = user_id_;
@@ -126,10 +141,7 @@ void ShareCapture::onRawDataFrameReceived(YUVRawDataI420* data) {
     frame.width = width; frame.height = height;
     frame.rotation = data->GetRotation(); frame.limited_range = data->IsLimitedI420();
     frame.source_ms = data->GetTimeStamp();
-    frame.i420.resize(y_size + 2 * uv_size);
-    std::memcpy(frame.i420.data(), data->GetYBuffer(), y_size);
-    std::memcpy(frame.i420.data() + y_size, data->GetUBuffer(), uv_size);
-    std::memcpy(frame.i420.data() + y_size + uv_size, data->GetVBuffer(), uv_size);
+    frame.i420 = pixels_;
     capture_.event("sdk.raw_share.frame", {{"source_id", data->GetSourceID()}, {"source_timestamp_ms", data->GetTimeStamp()},
                                            {"width", data->GetStreamWidth()}, {"height", data->GetStreamHeight()},
                                            {"rotation", data->GetRotation()}, {"bytes", data->GetBufferLen()}});
@@ -141,7 +153,7 @@ void ShareCapture::onRendererBeDestroyed() {
   capture_.event("sdk.callback", {{"interface", "IZoomSDKRendererDelegate"}, {"callback", "onRendererBeDestroyed"}});
 }
 void ShareCapture::onRawDataStatusChanged(RawDataStatus status) {
-  if (status == RawData_Off) { std::lock_guard<std::mutex> lock(mutex_); latest_.reset(); }
+  if (status == RawData_Off) { std::lock_guard<std::mutex> lock(mutex_); latest_.reset(); pixels_.reset(); }
   capture_.event("sdk.callback", {{"interface", "IZoomSDKRendererDelegate"}, {"callback", "onRawDataStatusChanged"},
                                    {"arguments", {{"status", static_cast<int>(status)}}}});
 }

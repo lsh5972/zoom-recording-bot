@@ -114,6 +114,20 @@ int main() {
     }
     {
       Output output;
+      CaptureRuntime capture(output.root, "session", 1024);
+      ScreenshotFrame frame;
+      frame.width = 640; frame.height = 360;
+      frame.i420 = std::make_shared<const std::vector<unsigned char>>(640 * 360 * 3 / 2, 128);
+      capture.screenshot(std::move(frame), 0);
+      capture.close();
+      require(capture.failed(), "Queue limits must account for shared pixel bytes, not only the pointer size");
+      bool overflow = false;
+      for (const auto& event : output.events())
+        if (event["type"] == "capture.error" && event["data"]["reason"] == "callback_queue_failed") overflow = true;
+      require(overflow, "Oversized shared pixels must fail in the queue rather than reach the screenshot consumer");
+    }
+    {
+      Output output;
       CaptureRuntime capture(output.root, "session", 32 * 1024 * 1024, 1700000000000);
       capture.admitted();
       capture.cloud_recording(0);

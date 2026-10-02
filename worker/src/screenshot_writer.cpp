@@ -1,7 +1,9 @@
 #include "zoom_bot/screenshot_writer.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <fcntl.h>
 #include <iomanip>
 #include <jpeglib.h>
@@ -15,6 +17,13 @@ namespace {
 constexpr int width = 640, height = 360;
 struct JpegError { jpeg_error_mgr manager; jmp_buf target; };
 void jpeg_error(j_common_ptr jpeg) { longjmp(reinterpret_cast<JpegError*>(jpeg->err)->target, 1); }
+struct JpegEncoder {
+  jpeg_compress_struct compressor{};
+  JpegError error{};
+  unsigned char* bytes = nullptr;
+  unsigned long size = 0;
+  ~JpegEncoder() { jpeg_destroy_compress(&compressor); std::free(bytes); }
+};
 
 std::vector<unsigned char> rgb(const ScreenshotFrame& frame) {
   if (frame.width <= 0 || frame.height <= 0 || frame.width > 8192 || frame.height > 8192)
@@ -22,7 +31,7 @@ std::vector<unsigned char> rgb(const ScreenshotFrame& frame) {
   const auto pixels = static_cast<size_t>(frame.width) * frame.height;
   const auto chroma_width = (frame.width + 1) / 2, chroma_height = (frame.height + 1) / 2;
   if (pixels > 32 * 1024 * 1024 ||
-      frame.i420.size() != pixels + 2 * static_cast<size_t>(chroma_width) * chroma_height ||
+      !frame.i420 || frame.i420->size() != pixels + 2 * static_cast<size_t>(chroma_width) * chroma_height ||
       (frame.rotation != 0 && frame.rotation != 90 && frame.rotation != 180 && frame.rotation != 270))
     throw std::runtime_error("Invalid shared-screen frame");
   const bool swapped = frame.rotation == 90 || frame.rotation == 270;
@@ -33,7 +42,7 @@ std::vector<unsigned char> rgb(const ScreenshotFrame& frame) {
   const int image_width = std::max(1, static_cast<int>(rotated_width * scale));
   const int image_height = std::max(1, static_cast<int>(rotated_height * scale));
   const int left = (width - image_width) / 2, top = (height - image_height) / 2;
-  const auto* y = frame.i420.data();
+  const auto* y = frame.i420->data();
   const auto* u = y + pixels;
   const auto* v = u + static_cast<size_t>(chroma_width) * chroma_height;
   std::vector<unsigned char> result(width * height * 3, 0);
@@ -58,23 +67,17 @@ std::vector<unsigned char> rgb(const ScreenshotFrame& frame) {
   return result;
 }
 
-void jpeg(const std::filesystem::path& path, const std::vector<unsigned char>& pixels) {
-  const auto temporary = path.string() + ".part";
-  int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-  if (fd < 0) throw std::runtime_error("Cannot create screenshot");
-  FILE* file = fdopen(fd, "wb");
-  if (!file) { close(fd); throw std::runtime_error("Cannot open screenshot"); }
-  jpeg_compress_struct compressor{};
-  JpegError error{};
+std::vector<unsigned char> encode(const ScreenshotFrame& frame) {
+  const auto pixels = rgb(frame);
+  // Heap state remains valid after libjpeg's longjmp; RAII releases its destination buffer.
+  auto encoder = std::make_unique<JpegEncoder>();
+  auto& compressor = encoder->compressor;
+  auto& error = encoder->error;
   compressor.err = jpeg_std_error(&error.manager);
   error.manager.error_exit = jpeg_error;
-  if (setjmp(error.target)) {
-    jpeg_destroy_compress(&compressor);
-    fclose(file);
-    throw std::runtime_error("JPEG encoding failed");
-  }
+  if (setjmp(error.target)) throw std::runtime_error("JPEG encoding failed");
   jpeg_create_compress(&compressor);
-  jpeg_stdio_dest(&compressor, file);
+  jpeg_mem_dest(&compressor, &encoder->bytes, &encoder->size);
   compressor.image_width = width;
   compressor.image_height = height;
   compressor.input_components = 3;
@@ -87,11 +90,23 @@ void jpeg(const std::filesystem::path& path, const std::vector<unsigned char>& p
     jpeg_write_scanlines(&compressor, &row, 1);
   }
   jpeg_finish_compress(&compressor);
-  jpeg_destroy_compress(&compressor);
-  const bool flushed = fflush(file) == 0;
+  return std::vector<unsigned char>(encoder->bytes, encoder->bytes + encoder->size);
+}
+
+void publish(const std::filesystem::path& path, const std::vector<unsigned char>& bytes) {
+  const auto temporary = path.string() + ".part";
+  int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) throw std::runtime_error("Cannot create screenshot");
+  size_t used = 0;
+  while (used < bytes.size()) {
+    const auto count = write(fd, bytes.data() + used, bytes.size() - used);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) { close(fd); throw std::runtime_error("Screenshot write failed"); }
+    used += static_cast<size_t>(count);
+  }
   const bool synced = fsync(fd) == 0;
-  const bool closed = fclose(file) == 0;
-  if (!flushed || !synced || !closed) throw std::runtime_error("Screenshot write failed");
+  const bool closed = close(fd) == 0;
+  if (!synced || !closed) throw std::runtime_error("Screenshot write failed");
   if (link(temporary.c_str(), path.c_str()) != 0) throw std::runtime_error("Screenshot publish failed");
   unlink(temporary.c_str());
   int directory = open(path.parent_path().c_str(), O_RDONLY);
@@ -114,7 +129,13 @@ nlohmann::json ScreenshotWriter::write(const ScreenshotFrame& frame, int64_t cap
   clock << std::setfill('0') << std::setw(2) << seconds / 3600 << ':'
         << std::setw(2) << seconds / 60 % 60 << ':' << std::setw(2) << seconds % 60;
   const auto filename = span->id() + "__share__" + clock.str() + "__shot-" + std::to_string(++sequence_) + ".jpg";
-  jpeg(output_ / filename, rgb(frame));
+  if (encoded_jpeg_.empty() || frame.i420 != encoded_frame_.i420 || frame.width != encoded_frame_.width ||
+      frame.height != encoded_frame_.height || frame.rotation != encoded_frame_.rotation ||
+      frame.limited_range != encoded_frame_.limited_range) {
+    encoded_jpeg_ = encode(frame);
+    encoded_frame_ = frame;
+  }
+  publish(output_ / filename, encoded_jpeg_);
   return {{"image_path", filename}, {"width", width}, {"height", height},
           {"user_id", frame.user_id}, {"share_source_id", frame.share_source_id},
           {"source_timestamp_ms", frame.source_ms}, {"capture_ms", capture_ms}, {"unix_ms", unix_ms},

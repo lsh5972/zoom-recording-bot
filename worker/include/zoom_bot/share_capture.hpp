@@ -31,6 +31,7 @@ class ShareCapture final : public ZOOMSDK::IZoomSDKRendererDelegate {
   uint32_t user_id_ = 0, source_id_ = 0;
   int64_t next_ms_ = 0;
   std::optional<ScreenshotFrame> latest_;
+  std::shared_ptr<std::vector<unsigned char>> pixels_;
   nlohmann::json previous_sources_;
 };
 }  // namespace zoom_bot

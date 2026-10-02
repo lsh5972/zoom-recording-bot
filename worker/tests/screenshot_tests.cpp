@@ -38,8 +38,9 @@ ScreenshotFrame red_frame() {
   ScreenshotFrame frame;
   frame.user_id = 42; frame.share_source_id = 900; frame.width = frame.height = 4;
   frame.source_ms = 12345;
-  frame.i420 = std::vector<unsigned char>(16, 82);
-  frame.i420.insert(frame.i420.end(), 4, 90); frame.i420.insert(frame.i420.end(), 4, 240);
+  auto pixels = std::make_shared<std::vector<unsigned char>>(16, 82);
+  pixels->insert(pixels->end(), 4, 90); pixels->insert(pixels->end(), 4, 240);
+  frame.i420 = std::move(pixels);
   return frame;
 }
 int main() {
@@ -63,6 +64,8 @@ int main() {
             "Publish private finalized images atomically without leftover partial files");
     const auto duplicate = writer.write(frame, 1000, recordings);
     require(one["image_path"] != duplicate["image_path"], "Images in the same second must never overwrite each other");
+    require(decode(output.root / duplicate["image_path"].get<std::string>()) == pixels,
+            "Reused JPEG data must still publish a complete independently decodable file");
     recordings.change(3, 2000, 0, epoch);
     const auto paused = writer.write(frame, 2500, recordings);
     require(paused["recording_id"].is_null() && paused["recording_time_ms"].is_null() &&
@@ -82,13 +85,35 @@ int main() {
       decode(output.root / image["image_path"].get<std::string>());
     }
     frame.limited_range = false;
-    std::fill(frame.i420.begin(), frame.i420.begin() + 16, 255);
-    std::fill(frame.i420.begin() + 16, frame.i420.end(), 128);
+    auto white_pixels = std::make_shared<std::vector<unsigned char>>(24, 128);
+    std::fill(white_pixels->begin(), white_pixels->begin() + 16, 255);
+    frame.i420 = white_pixels;
     const auto white = writer.write(frame, 20000, recordings);
     pixels = decode(output.root / white["image_path"].get<std::string>());
     require(pixels[center] > 245 && pixels[center + 1] > 245 && pixels[center + 2] > 245,
             "Full-range I420 must preserve white");
-    frame.i420.clear();
+    frame.width = 8; frame.height = 2; frame.rotation = 0;
+    const auto landscape = writer.write(frame, 21000, recordings);
+    pixels = decode(output.root / landscape["image_path"].get<std::string>());
+    require(pixels[(20 * 640 + 320) * 3] < 10 && pixels[center] > 245,
+            "Changing geometry with the same pixel buffer must invalidate cached letterboxing");
+    frame.rotation = 90;
+    const auto portrait = writer.write(frame, 22000, recordings);
+    pixels = decode(output.root / portrait["image_path"].get<std::string>());
+    require(pixels[(180 * 640 + 200) * 3] < 10 && pixels[center] > 245,
+            "Changing rotation with the same pixel buffer must invalidate cached geometry");
+    frame.width = frame.height = 4; frame.rotation = 0; frame.limited_range = true;
+    auto dark_pixels = std::make_shared<std::vector<unsigned char>>(24, 128);
+    std::fill(dark_pixels->begin(), dark_pixels->begin() + 16, 16);
+    frame.i420 = dark_pixels;
+    const auto limited = writer.write(frame, 23000, recordings);
+    require(decode(output.root / limited["image_path"].get<std::string>())[center] < 3,
+            "Limited-range luminance 16 must produce black");
+    frame.limited_range = false;
+    const auto full = writer.write(frame, 24000, recordings);
+    require(decode(output.root / full["image_path"].get<std::string>())[center] >= 14,
+            "Changing color range with the same pixel buffer must invalidate cached colors");
+    frame.i420.reset();
     try { writer.write(frame, 20000, recordings); throw std::runtime_error("Invalid frame accepted"); }
     catch (const std::runtime_error& error) {
       require(std::string(error.what()) == "Invalid shared-screen frame", "Reject truncated I420 without reading out of bounds");

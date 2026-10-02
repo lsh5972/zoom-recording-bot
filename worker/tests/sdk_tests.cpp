@@ -1,8 +1,11 @@
 #include "zoom_bot/zoom_session.hpp"
 #include "sdk_stubs.hpp"
 
+#include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <jpeglib.h>
 #include <sndfile.h>
 #include <stdexcept>
 #include <unistd.h>
@@ -147,6 +150,7 @@ struct ShareFrame : YUVRawDataI420Stub {
   std::vector<unsigned char> bytes = std::vector<unsigned char>(24, 128);
   int references = 1;
   unsigned int source = 900;
+  unsigned long long timestamp = 12345;
   bool AddRef() override { ++references; return true; }
   int Release() override { if (--references == 0) bytes.clear(); return references; }
   char* GetYBuffer() override { return reinterpret_cast<char*>(bytes.data()); }
@@ -156,7 +160,7 @@ struct ShareFrame : YUVRawDataI420Stub {
   unsigned int GetStreamHeight() override { return 4; }
   unsigned int GetBufferLen() override { return bytes.size(); }
   unsigned int GetSourceID() override { return source; }
-  unsigned long long GetTimeStamp() override { return 12345; }
+  unsigned long long GetTimeStamp() override { return timestamp; }
   bool IsLimitedI420() override { return true; }
 };
 struct Meeting : IMeetingServiceStub {
@@ -621,6 +625,58 @@ void share_permission_reconnect_and_switching() {
           "Sharing transitions must keep two sampled images without unauthorized or stale images");
 }
 
+void share_snapshots_preserve_pixels_and_every_frame_event() {
+  Backend sdk; backend = &sdk; Output output; ShareFrame frame;
+  CaptureRuntime capture(output.root, "session");
+  capture.admitted(); capture.cloud_recording(0);
+  {
+    ShareCapture share(capture, 1);
+    sdk.meeting.share.begin(); share.refresh(&sdk.meeting.share);
+    std::fill(frame.bytes.begin(), frame.bytes.begin() + 16, 16);
+    for (int i = 0; i < 60; ++i) {
+      ++frame.timestamp;
+      sdk.renderer.delegate->onRawDataFrameReceived(&frame);
+    }
+    share.tick(0);
+    std::fill(frame.bytes.begin(), frame.bytes.begin() + 16, 235);
+    sdk.renderer.delegate->onRawDataFrameReceived(&frame); share.tick(1000);
+    std::fill(frame.bytes.begin(), frame.bytes.begin() + 16, 16);
+    sdk.renderer.delegate->onRawDataFrameReceived(&frame); share.tick(2000);
+    frame.Release(); share.tick(3000);
+    require(frame.references == 0, "Shared snapshots must own pixels without retaining SDK buffers");
+    sdk.renderer.delegate->onRawDataStatusChanged(IZoomSDKRendererDelegate::RawData_Off);
+    share.tick(4000);
+  }
+  capture.close();
+  const auto images = output.events("screenshot.saved");
+  require(!capture.failed() && images.size() == 4,
+          "Changed and static snapshots must preserve the configured interval without stale off-stream images");
+  require(output.events("sdk.raw_share.frame").size() == 62,
+          "Repeated identical pixels must still retain every raw-frame event");
+  for (size_t i = 0; i < images.size(); ++i) {
+    require(images[i]["data"]["source_timestamp_ms"] == frame.timestamp &&
+            images[i]["data"]["capture_ms"] == i * 1000,
+            "Pixel caching must preserve current source metadata and each sample's capture time");
+    const auto path = output.root / images[i]["data"]["image_path"].get<std::string>();
+    FILE* file = fopen(path.c_str(), "rb");
+    require(file != nullptr, "Every queued snapshot must publish an image");
+    jpeg_decompress_struct decoder{}; jpeg_error_mgr error{};
+    decoder.err = jpeg_std_error(&error);
+    jpeg_create_decompress(&decoder); jpeg_stdio_src(&decoder, file);
+    jpeg_read_header(&decoder, TRUE); decoder.out_color_space = JCS_RGB;
+    jpeg_start_decompress(&decoder);
+    require(decoder.output_width == 640 && decoder.output_height == 360 && decoder.output_components == 3,
+            "Cached snapshots must remain 640x360 RGB JPEGs");
+    std::vector<unsigned char> row(640 * 3);
+    while (decoder.output_scanline <= 180) {
+      JSAMPROW pixels = row.data(); jpeg_read_scanlines(&decoder, &pixels, 1);
+    }
+    require(i == 1 ? row[320 * 3] > 245 : row[320 * 3] < 10,
+            "Queued snapshots must stay immutable when pixels change with the same SDK timestamp");
+    jpeg_abort_decompress(&decoder); jpeg_destroy_decompress(&decoder); fclose(file);
+  }
+}
+
 int main() {
   try {
     rejected_auth_never_joins(); sdk_permission_controls_recording();
@@ -632,7 +688,8 @@ int main() {
     admission_refreshes_names_received_before_user_info();
     share_samples_static_frames_at_configured_intervals();
     share_permission_reconnect_and_switching();
-    std::cout << "19 SDK adapter scenarios passed (test doubles, no live meeting)\n";
+    share_snapshots_preserve_pixels_and_every_frame_event();
+    std::cout << "20 SDK adapter scenarios passed (test doubles, no live meeting)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
