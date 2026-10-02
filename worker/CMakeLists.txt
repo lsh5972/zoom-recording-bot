@@ -8,6 +8,7 @@ if(POLICY CMP0135)
 endif()
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
+find_package(JPEG REQUIRED)
 pkg_check_modules(SNDFILE REQUIRED IMPORTED_TARGET sndfile)
 
 FetchContent_Declare(libfvad
@@ -25,10 +26,10 @@ FetchContent_MakeAvailable(libfvad json)
 add_library(zoom_bot_audio
   src/event_journal.cpp src/wav_writer.cpp src/speech_detector.cpp
   src/audio_segmenter.cpp src/audio_pipeline.cpp src/recording_timeline.cpp
-  src/join_config.cpp src/capture_runtime.cpp
+  src/join_config.cpp src/capture_runtime.cpp src/screenshot_writer.cpp
 )
 target_include_directories(zoom_bot_audio PUBLIC include PRIVATE ${libfvad_SOURCE_DIR}/include)
-target_link_libraries(zoom_bot_audio PUBLIC PkgConfig::SNDFILE nlohmann_json::nlohmann_json Threads::Threads PRIVATE fvad)
+target_link_libraries(zoom_bot_audio PUBLIC PkgConfig::SNDFILE nlohmann_json::nlohmann_json Threads::Threads JPEG::JPEG PRIVATE fvad)
 target_compile_options(zoom_bot_audio PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(zoom-bot-replay src/replay.cpp)
 target_link_libraries(zoom-bot-replay PRIVATE zoom_bot_audio)
@@ -41,6 +42,9 @@ add_test(NAME audio_tests COMMAND audio_tests)
 add_executable(capture_tests tests/capture_tests.cpp)
 target_link_libraries(capture_tests PRIVATE zoom_bot_audio)
 add_test(NAME capture_tests COMMAND capture_tests)
+add_executable(screenshot_tests tests/screenshot_tests.cpp)
+target_link_libraries(screenshot_tests PRIVATE zoom_bot_audio)
+add_test(NAME screenshot_tests COMMAND screenshot_tests)
 
 set(ZOOM_SDK_ROOT "" CACHE PATH "Official Linux SDK distribution containing h/ and libmeetingsdk.so")
 set(ZOOM_API_HEADERS "" CACHE PATH "Public API headers for compile checks only; no runtime")
@@ -60,7 +64,7 @@ if(ZOOM_SDK_ROOT OR ZOOM_API_HEADERS)
     DEPENDS ${SDK_HEADER_FILES} "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/generate_sdk_listeners.py"
       "${CMAKE_CURRENT_SOURCE_DIR}/include/zoom_bot/sdk_headers.hpp"
     VERBATIM)
-  add_library(zoom_bot_sdk OBJECT src/zoom_session.cpp "${LISTENERS}")
+  add_library(zoom_bot_sdk OBJECT src/zoom_session.cpp src/share_capture.cpp "${LISTENERS}")
   target_include_directories(zoom_bot_sdk PUBLIC "${SDK_HEADERS}" "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_link_libraries(zoom_bot_sdk PUBLIC zoom_bot_audio)
   target_compile_options(zoom_bot_sdk PRIVATE -Wall -Wextra -Wno-unused-parameter)

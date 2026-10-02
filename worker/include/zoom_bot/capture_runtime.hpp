@@ -1,6 +1,7 @@
 #pragma once
 
 #include "zoom_bot/audio_pipeline.hpp"
+#include "zoom_bot/screenshot_writer.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -24,12 +25,13 @@ class CaptureRuntime {
   void pcm(PcmPacket packet, uint64_t source_ms) noexcept;
   void pause(std::string reason) noexcept;
   void cloud_recording(int status) noexcept;
+  void screenshot(ScreenshotFrame frame, int64_t at_ms) noexcept;
   void fail() noexcept;
   bool failed() const { return failed_; }
   void close();
 
  private:
-  enum class Kind { Event, Joined, Left, Renamed, Pcm, Pause, CloudRecording };
+  enum class Kind { Event, Joined, Left, Renamed, Pcm, Pause, CloudRecording, Screenshot };
   struct Item {
     Kind kind;
     int64_t at_ms;
@@ -38,11 +40,13 @@ class CaptureRuntime {
     PcmPacket packet{};
     uint64_t source_ms = 0;
     size_t bytes = 0;
+    ScreenshotFrame frame{};
   };
   void push(Item item) noexcept;
   void consume() noexcept;
   EventJournal events_;
   WavWriter wav_;
+  ScreenshotWriter screenshots_;
   RecordingTimeline recordings_;
   AudioPipeline audio_;
   const size_t capacity_;

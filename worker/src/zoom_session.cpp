@@ -16,7 +16,7 @@ nlohmann::json user_snapshot(IUserInfo* user) {
 }
 
 ZoomSession::ZoomSession(JoinConfig config, CaptureRuntime& capture)
-    : config_(std::move(config)), capture_(capture) {
+    : config_(std::move(config)), capture_(capture), share_(capture, config_.screenshot_interval_seconds) {
   auth_events_.after_onAuthenticationReturn = [this](AuthResult result) {
     defer([this, result] { if (result == AUTHRET_SUCCESS) join(); else error("sdk_auth_failed"); });
   };
@@ -33,8 +33,10 @@ ZoomSession::ZoomSession(JoinConfig config, CaptureRuntime& capture)
   meeting_events_.after_onMeetingStatusChanged = [this](MeetingStatus state, int result) {
     if (state == MEETING_STATUS_INMEETING) capture_.admitted();
     // Stop accepting PCM immediately; cleanup and SDK calls wait for the main thread.
-    if (state == MEETING_STATUS_RECONNECTING || state == MEETING_STATUS_ENDED || state == MEETING_STATUS_FAILED)
+    if (state == MEETING_STATUS_RECONNECTING || state == MEETING_STATUS_ENDED || state == MEETING_STATUS_FAILED) {
       receiving_ = false;
+      share_.suspend();
+    }
     defer([this, state, result] { status(state, result); });
   };
   participant_events_.after_onUserJoin = [this](IList<unsigned int>* ids, const zchar_t*) { users(ids, true); };
@@ -53,12 +55,12 @@ ZoomSession::ZoomSession(JoinConfig config, CaptureRuntime& capture)
   participant_events_.after_onCoHostChangeNotification = [this](unsigned int, bool) { defer([this] { try_recording(); }); };
   recording_events_.after_onRecordPrivilegeChanged = [this](bool allowed) {
     denied_ = !allowed;
-    if (!allowed) receiving_ = false;
+    if (!allowed) { receiving_ = false; share_.suspend(); }
     defer([this] { try_recording(); });
   };
   recording_events_.after_onLocalRecordingPrivilegeRequestStatus = [this](RequestLocalRecordingStatus status) {
     if (status == RequestLocalRecording_Granted) denied_ = false;
-    if (status == RequestLocalRecording_Denied) { denied_ = true; receiving_ = false; }
+    if (status == RequestLocalRecording_Denied) { denied_ = true; receiving_ = false; share_.suspend(); }
     defer([this] { try_recording(); });
   };
   audio_events_.after_onUserAudioStatusChange = [this](IList<IUserAudioStatus*>*, const zchar_t*) {
@@ -72,6 +74,14 @@ ZoomSession::ZoomSession(JoinConfig config, CaptureRuntime& capture)
   video_events_.after_onHostRequestStartVideo = [this](IRequestStartVideoHandler* handler) {
     if (handler) check(handler->Ignore(), "ignore_video_request");
   };
+  auto share_changed = [this](ZoomSDKSharingSourceInfo info) {
+    // Copy only values; SDK-owned monitorID strings expire after the callback.
+    defer([this, user = info.userid, source = info.shareSourceID, status = info.status, type = info.contentType] {
+      if (subscribed_ && receiving_) share_.changed(user, source, status, type);
+    });
+  };
+  share_events_.after_onSharingStatus = share_changed;
+  share_events_.after_onShareContentNotification = share_changed;
   audio_events_.after_onHostRequestStartAudio = [this](IRequestStartAudioHandler* handler) {
     if (handler) check(handler->Ignore(), "ignore_unmute_request");
   };
@@ -336,7 +346,7 @@ void ZoomSession::try_recording() {
     }
     return;
   }
-  if (subscribed_) return;
+  if (subscribed_) { share_.refresh(meeting_->GetMeetingShareController()); return; }
   raw_ = GetAudioRawdataHelper();
   if (!raw_) throw std::runtime_error("SDK raw audio helper unavailable");
   snapshot_participants();
@@ -349,6 +359,7 @@ void ZoomSession::try_recording() {
   const auto subscribed = raw_->subscribe(this, false);
   if (subscribed != SDKERR_SUCCESS) { receiving_ = false; check(subscribed, "subscribe_one_way_audio"); }
   subscribed_ = true;
+  share_.refresh(meeting_->GetMeetingShareController());
   capture_.event("sdk.event_coverage", {{"interface", "IZoomSDKAudioRawDataDelegate"}, {"registered", true},
                                        {"callbacks", {"onMixedAudioRawDataReceived", "onOneWayAudioRawDataReceived",
                                                       "onShareAudioRawDataReceived", "onOneWayInterpreterAudioRawDataReceived"}}});
@@ -358,6 +369,7 @@ void ZoomSession::try_recording() {
 
 void ZoomSession::pause_recording(const std::string& reason) {
   { std::lock_guard<std::mutex> lock(raw_mutex_); receiving_ = false; }
+  share_.stop();
   if (subscribed_ && raw_) {
     capture_.event("sdk.operation", {{"operation", "unsubscribe_audio"}, {"result", sdk_value(raw_->unSubscribe())}});
     subscribed_ = false;
@@ -398,6 +410,7 @@ void ZoomSession::tick() {
       try_recording();
       next_permission_check_ = now + std::chrono::seconds(1);
     }
+    if (subscribed_ && receiving_) share_.tick(capture_.now_ms());
     if (!subscribed_ && now >= deadline_) error("admission_or_recording_permission_timeout");
   } catch (...) { error("sdk_operation_failed"); }
 }

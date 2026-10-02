@@ -2,6 +2,7 @@
 
 #include "zoom_bot/capture_runtime.hpp"
 #include "zoom_bot/join_config.hpp"
+#include "zoom_bot/share_capture.hpp"
 #include "sdk_listeners.hpp"
 #include <deque>
 #include <functional>
@@ -57,6 +58,7 @@ class ZoomSession final : public SdkEventSink, public IZoomSDKAudioRawDataDelega
   std::deque<std::function<void()>> actions_;
   std::set<uint32_t> known_users_;
   nlohmann::json previous_permission_;
+  ShareCapture share_;
 
   IAuthServiceEventListener auth_events_{*this};
   IMeetingServiceEventListener meeting_events_{*this};

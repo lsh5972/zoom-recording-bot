@@ -78,7 +78,8 @@ def main():
     if args.stubs:
         interfaces = ["IAuthService", "IMeetingService", "ISettingService", "IAudioSettingContext",
                       "IMeetingParticipantsController", "IMeetingRecordingController", "IMeetingAudioController",
-                      "IUserInfo", "AudioRawData", "IZoomSDKAudioRawDataHelper"]
+                      "IUserInfo", "AudioRawData", "IZoomSDKAudioRawDataHelper", "IMeetingShareController",
+                      "IZoomSDKRenderer", "YUVRawDataI420"]
         stubs = ['// Generated test doubles. Not a Zoom SDK runtime.', '#pragma once',
                  '#include "zoom_bot/sdk_headers.hpp"', 'using namespace ZOOMSDK;']
         for interface in interfaces:

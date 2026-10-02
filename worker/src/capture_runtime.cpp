@@ -15,7 +15,7 @@ int64_t steady_ms() {
 
 CaptureRuntime::CaptureRuntime(const std::filesystem::path& output, const std::string& session_id,
                                size_t capacity, int64_t meeting_start_unix_ms)
-    : events_(output, session_id), wav_(output), audio_(events_, wav_, recordings_), capacity_(capacity),
+    : events_(output, session_id), wav_(output), screenshots_(output), audio_(events_, wav_, recordings_), capacity_(capacity),
       meeting_start_unix_ms_(meeting_start_unix_ms),
       thread_([this] { consume(); }) {}
 
@@ -38,7 +38,7 @@ void CaptureRuntime::fail() noexcept { failed_ = true; ready_.notify_one(); }
 void CaptureRuntime::push(Item item) noexcept {
   try {
     item.bytes = sizeof(Item) + item.text.size() + item.data.dump().size() +
-                 item.packet.samples.size() * sizeof(int16_t);
+                 item.packet.samples.size() * sizeof(int16_t) + item.frame.i420.size();
     std::lock_guard<std::mutex> lock(mutex_);
     if (closing_ || failed_) return;
     if (queue_.size() >= 20000 || item.bytes > capacity_ - std::min(bytes_, capacity_)) {
@@ -84,6 +84,12 @@ void CaptureRuntime::cloud_recording(int status) noexcept {
   push({Kind::CloudRecording, now_ms(), {}, {{"status", status}}});
 }
 
+void CaptureRuntime::screenshot(ScreenshotFrame frame, int64_t at_ms) noexcept {
+  Item item{Kind::Screenshot, at_ms, {}, {}};
+  item.frame = std::move(frame);
+  push(std::move(item));
+}
+
 void CaptureRuntime::close() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -126,6 +132,9 @@ void CaptureRuntime::consume() noexcept {
         continue;
       }
       switch (item.kind) {
+        case Kind::Screenshot:
+          events_.append("screenshot.saved", item.at_ms, screenshots_.write(item.frame, item.at_ms, recordings_));
+          break;
         case Kind::Event: events_.append(item.text, item.at_ms, std::move(item.data)); break;
         case Kind::Joined:
           source_clocks.erase(item.packet.user_id);

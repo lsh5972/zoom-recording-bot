@@ -24,4 +24,5 @@
 #include <network_connection_handler_interface.h>
 #include <zoom_sdk_raw_data_def.h>
 #include <rawdata/rawdata_audio_helper_interface.h>
+#include <rawdata/rawdata_renderer_interface.h>
 #include <rawdata/zoom_rawdata_api.h>

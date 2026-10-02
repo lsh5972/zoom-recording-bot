@@ -115,12 +115,57 @@ struct ReminderHandler : IMeetingReminderHandler {
   SDKError SetHideFeatureDisclaimers() override { return SDKERR_SUCCESS; }
   bool IsNeedExplicitConsent4AICustomDisclaimer() override { return false; }
 };
+struct ShareController : IMeetingShareControllerStub {
+  IMeetingShareCtrlEvent* listener = nullptr;
+  List<uint32_t> users;
+  List<ZoomSDKSharingSourceInfo> sources;
+  SDKError SetEvent(IMeetingShareCtrlEvent* value) override { listener = value; return SDKERR_SUCCESS; }
+  IList<uint32_t>* GetViewableSharingUserList() override { return &users; }
+  IList<ZoomSDKSharingSourceInfo>* GetSharingSourceInfoList(unsigned int) override { return &sources; }
+  ZoomSDKSharingSourceInfo begin(uint32_t user = 42, uint32_t source = 900) {
+    ZoomSDKSharingSourceInfo info;
+    info.userid = user; info.shareSourceID = source; info.status = Sharing_Other_Share_Begin;
+    info.contentType = SHARE_TYPE_DS;
+    users.items = {user}; sources.items = {info};
+    return info;
+  }
+};
+struct Renderer : IZoomSDKRendererStub {
+  IZoomSDKRendererDelegate* delegate = nullptr;
+  uint32_t source = 0;
+  int subscriptions = 0, unsubscriptions = 0;
+  SDKError result = SDKERR_SUCCESS;
+  ZoomSDKResolution resolution = ZoomSDKResolution_NoUse;
+  SDKError setRawDataResolution(ZoomSDKResolution value) override { resolution = value; return SDKERR_SUCCESS; }
+  SDKError subscribe(uint32_t id, ZoomSDKRawDataType type) override {
+    require(type == RAW_DATA_TYPE_SHARE, "Screenshot renderer must never subscribe to participant video");
+    source = id; ++subscriptions; return result;
+  }
+  SDKError unSubscribe() override { ++unsubscriptions; return SDKERR_SUCCESS; }
+};
+struct ShareFrame : YUVRawDataI420Stub {
+  std::vector<unsigned char> bytes = std::vector<unsigned char>(24, 128);
+  int references = 1;
+  unsigned int source = 900;
+  bool AddRef() override { ++references; return true; }
+  int Release() override { if (--references == 0) bytes.clear(); return references; }
+  char* GetYBuffer() override { return reinterpret_cast<char*>(bytes.data()); }
+  char* GetUBuffer() override { return GetYBuffer() + 16; }
+  char* GetVBuffer() override { return GetYBuffer() + 20; }
+  unsigned int GetStreamWidth() override { return 4; }
+  unsigned int GetStreamHeight() override { return 4; }
+  unsigned int GetBufferLen() override { return bytes.size(); }
+  unsigned int GetSourceID() override { return source; }
+  unsigned long long GetTimeStamp() override { return 12345; }
+  bool IsLimitedI420() override { return true; }
+};
 struct Meeting : IMeetingServiceStub {
   IMeetingServiceEvent* listener = nullptr;
   Participants participants;
   Recording recording;
   Audio audio;
   Reminder reminder;
+  ShareController share;
   int joins = 0, starts = 0, leaves = 0;
   uint64_t number = 0;
   std::string zak, password;
@@ -140,8 +185,9 @@ struct Meeting : IMeetingServiceStub {
   IMeetingRecordingController* GetMeetingRecordingController() override { return &recording; }
   IMeetingAudioController* GetMeetingAudioController() override { return &audio; }
   IMeetingReminderController* GetMeetingReminderController() override { return &reminder; }
+  IMeetingShareController* GetMeetingShareController() override { return &share; }
 };
-struct Backend { Auth auth; Meeting meeting; Settings settings; Raw raw; int cleanup = 0; };
+struct Backend { Auth auth; Meeting meeting; Settings settings; Raw raw; Renderer renderer; int cleanup = 0, renderers = 0; };
 Backend* backend;
 
 namespace ZOOMSDK {
@@ -158,6 +204,14 @@ SDKError DestroySettingService(ISettingService*) { return SDKERR_SUCCESS; }
 SDKError CleanUPSDK() { ++backend->cleanup; return SDKERR_SUCCESS; }
 const zchar_t* GetSDKVersion() { return "test-double-public-api"; }
 IZoomSDKAudioRawDataHelper* GetAudioRawdataHelper() { return &backend->raw; }
+SDKError createRenderer(IZoomSDKRenderer** out, IZoomSDKRendererDelegate* delegate) {
+  backend->renderer.delegate = delegate; *out = &backend->renderer; ++backend->renderers; return SDKERR_SUCCESS;
+}
+SDKError destroyRenderer(IZoomSDKRenderer*) {
+  auto* delegate = backend->renderer.delegate; backend->renderer.delegate = nullptr;
+  if (delegate) delegate->onRendererBeDestroyed();
+  return SDKERR_SUCCESS;
+}
 }
 }
 
@@ -501,6 +555,72 @@ void admission_refreshes_names_received_before_user_info() {
           "WAV filenames must use the recovered display name instead of the generic speaker label");
 }
 
+void share_samples_static_frames_at_configured_intervals() {
+  Backend sdk; backend = &sdk; Output output; ShareFrame frame;
+  CaptureRuntime capture(output.root, "session");
+  capture.admitted(); capture.cloud_recording(0);
+  {
+    ShareCapture share(capture, 2);
+    share.tick(0);
+    require(sdk.renderers == 0, "No sharing must not create a renderer or images");
+    sdk.meeting.share.begin();
+    share.refresh(&sdk.meeting.share);
+    require(sdk.renderer.source == 900 && sdk.renderer.resolution == ZoomSDKResolution_360P,
+            "Late admission must subscribe to the actual share source ID at 360p");
+    sdk.renderer.delegate->onRawDataFrameReceived(&frame);
+    frame.Release();
+    require(frame.references == 0, "Do not retain SDK frames; copy pixels before the callback buffer expires");
+    share.tick(0); share.tick(1999); share.tick(2000);
+    sdk.renderer.delegate->onRawDataStatusChanged(IZoomSDKRendererDelegate::RawData_Off);
+    share.tick(4000);
+    require(frame.references == 0, "Raw share off must release the cached frame and stop stale screenshots");
+    share.stop(); share.tick(6000);
+  }
+  capture.close();
+  require(!capture.failed(), "Shared-screen samples must drain without capture failure");
+  const auto images = output.events("screenshot.saved");
+  require(images.size() == 2 && images[0]["data"]["capture_ms"] == 0 && images[1]["data"]["capture_ms"] == 2000,
+          "Save static slides every configured interval without requiring a new raw frame");
+  require(images[1]["data"]["source_timestamp_ms"] == 12345 && images[1]["data"]["share_source_id"] == 900,
+          "Keep source timestamps separate from sampled recording time");
+}
+
+void share_permission_reconnect_and_switching() {
+  Backend sdk; backend = &sdk; Output output; ShareFrame first, second;
+  sdk.meeting.share.begin();
+  sdk.meeting.recording.permission = SDKERR_NO_PERMISSION;
+  CaptureRuntime capture(output.root, "session");
+  {
+    ZoomSession session(config(), capture); admit(session, sdk);
+    require(sdk.renderers == 0, "Denied recording must not subscribe to shared-screen data");
+    sdk.meeting.recording.permission = SDKERR_SUCCESS;
+    sdk.meeting.recording.listener->onRecordPrivilegeChanged(true); session.tick();
+    require(sdk.renderers == 1, "Recording approval must discover an already active screen share");
+    sdk.renderer.delegate->onRawDataFrameReceived(&first); first.Release(); session.tick();
+    auto changed = sdk.meeting.share.begin(73, 901);
+    sdk.meeting.share.listener->onSharingStatus(changed); session.tick();
+    require(sdk.renderer.source == 901,
+            "A new sharer must release the old frame and subscribe to the new source ID");
+    sdk.renderer.delegate->onRawDataFrameReceived(&second); second.Release(); session.tick();
+    sdk.meeting.recording.listener->onRecordPrivilegeChanged(false);
+    require(second.references == 0, "Screenshot capture must not keep SDK callback buffers alive");
+    session.tick();
+    require(sdk.renderer.delegate == nullptr, "Revocation must destroy the share renderer");
+    sdk.meeting.recording.listener->onRecordPrivilegeChanged(true); session.tick();
+    sdk.meeting.listener->onMeetingStatusChanged(MEETING_STATUS_RECONNECTING, 0); session.tick();
+    require(sdk.renderer.delegate == nullptr, "Reconnect must destroy share subscriptions");
+    sdk.meeting.listener->onMeetingStatusChanged(MEETING_STATUS_INMEETING, 0); session.tick();
+    changed.status = Sharing_Other_Share_End;
+    sdk.meeting.share.users.items.clear(); sdk.meeting.share.sources.items.clear();
+    sdk.meeting.share.listener->onSharingStatus(changed); session.tick();
+    require(sdk.renderer.delegate == nullptr, "Sharing end must destroy the renderer instead of saving the last slide forever");
+    session.stop("test_stop");
+  }
+  capture.close();
+  require(!capture.failed() && output.events("screenshot.saved").size() == 2,
+          "Sharing transitions must keep two sampled images without unauthorized or stale images");
+}
+
 int main() {
   try {
     rejected_auth_never_joins(); sdk_permission_controls_recording();
@@ -510,7 +630,9 @@ int main() {
     real_pcm_fixture_through_sdk_callbacks();
     cloud_status_and_renames_reach_the_capture_consumer();
     admission_refreshes_names_received_before_user_info();
-    std::cout << "17 SDK adapter scenarios passed (test doubles, no live meeting)\n";
+    share_samples_static_frames_at_configured_intervals();
+    share_permission_reconnect_and_switching();
+    std::cout << "19 SDK adapter scenarios passed (test doubles, no live meeting)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
