@@ -23,6 +23,9 @@ SDK 테스트는 서비스 응답을 대체하며 실제 음성 fixture를 콜�
 실제 화자 PCM으로 32kHz·mono·16bit WAV 두 개와 speech_on/off·청크 이벤트를 생성하고
 독립 디코더로 프레임 수·음성 샘플을 확인했다. 동시 다화자의 실제 회의 검증은 아직 하지 않았다.
 SDK가 연속 10ms PCM에 같은 타임스탬프를 전달하는 경우도 모든 샘플을 보존하도록 보정한다.
+WAV 파일명에는 Zoom 표시 이름과 녹화본별 시간이 들어간다. 녹화가 없는 구간도 저장하며
+그때는 GMT+9의 24시간제 시각을 사용한다. 이 시간축 변경은 테스트 대역으로 검증하며
+실제 회의의 클라우드 중지·재시작 비교시험은 하지 않는다.
 이전 실제 worker 종료에서 SDK 정리 중 종료 코드 139가 발생했다. 종료 안정성은 아직 검증되지 않았다.
 
 ## 실행 환경과 설정
@@ -134,14 +137,17 @@ Docker는 자격증명·회의 출력 폴더를 빌드 context에서 제외한�
 
 ```sh
 ruby bin/zoom-bot run 12345678901
-ruby bin/zoom-bot stop SESSION_ID
+ruby bin/zoom-bot stop 12345678901
 ```
 
-한 번의 `run`으로 컨테이너 하나를 실행한다. 동일 회의의 중복 실행 방지는 아직 없다.
+한 번의 `run`으로 컨테이너 하나를 실행한다. 출력 경로는 `runs/<meeting_id>/output/`이다.
+같은 meeting ID 폴더가 이미 있으면 기존 녹음을 보호하기 위해 준비·중복 실행을 거부한다.
+기존 폴더를 자동 삭제하거나 덮어쓰지 않는다. UUID는 내부 session·container·chunk 식별자로 유지한다.
+`stop`·`deliver`는 meeting ID를 받으며, 이전 UUID 폴더도 UUID 인자로 접근할 수 있다.
 컨테이너 생성 성공과 Zoom 입장 성공은 구분한다.
 
 - 입력: 읽기 전용 `/run/zoom-bot/join.json`.
-- 출력: `/data` → 호스트의 `runs/<session_id>/output/`.
+- 출력: `/data` → 호스트의 `runs/<meeting_id>/output/`.
 - 이미지 entrypoint 인자: `--config /run/zoom-bot/join.json --output /data`.
 - S2S/SDK 원본 Secret은 컨테이너에 전달하지 않는다.
 - 이미지의 실행 사용자는 마운트된 `0600` 입력과 `0700` 출력에 접근할 수 있어야 한다.
@@ -167,7 +173,8 @@ SDK 정리 후 큐를 비우고 WAV·이벤트를 마감한다. 기존 다른 �
 ## 음성·이벤트 처리
 
 책임 분리: `ZoomSession`은 SDK 수명주기, `SpeechDetector`는 VAD,
-`AudioSegmenter`는 청크 경계, `WavWriter`는 WAV 저장, `EventJournal`은 이벤트 기록,
+`RecordingTimeline`은 클라우드 녹화 시간축, `AudioSegmenter`는 청크 경계,
+`WavWriter`는 WAV 저장·파일명, `EventJournal`은 이벤트 기록,
 Ruby `ChunkDelivery`는 건별 전달·재시도를 담당한다.
 
 - 사용자별 PCM에 VAD를 적용한다. 한 기기를 공유하는 여러 사람의 목소리 분리는 범위 밖이다.
@@ -175,8 +182,10 @@ Ruby `ChunkDelivery`는 건별 전달·재시도를 담당한다.
 - 발화가 30초 이어질 때만 중간 분할한다. pre-roll 200ms와 강제 분할 overlap 200ms를 사용한다.
   30초는 발화 시작부터 센다. pre-roll·overlap·무음 꼬리를 포함한 WAV 길이는 30초를 넘을 수 있다.
 - 완성된 독립 WAV마다 `audio.chunk_ready`를 즉시 기록한다. 회의 종료까지 기다리지 않는다.
-- 청크마다 `chunk_id`, `participant_session_id`, `utterance_id`, 순번,
-  공통 시간축의 `start_ms`/`end_ms`, `overlap_ms`, `cut_reason`을 포함한다.
+- 청크마다 `chunk_id`, `participant_session_id`, `utterance_id`, 화자별 `sequence`,
+  전체 출력 폴더의 `file_sequence`, `recording_id`, `display_name`, `speaker_label`,
+  `start_ms`/`end_ms`, `capture_start_ms`/`capture_end_ms`, `start_unix_ms`/`end_unix_ms`,
+  `timestamp_origin`, `overlap_ms`, `cut_reason`을 포함한다.
 - `speech_on/off`는 VAD 상태 전이에서 발생한다. 강제 청크 분할이나 mute 상태와 혼동하지 않는다.
 - SDK의 active-audio 콜백은 `sdk.callback`에 별도로 보존한다.
 - 재입장은 새 participant session으로 구분한다. 표시 이름으로 합치지 않는다.
@@ -187,32 +196,44 @@ Ruby `ChunkDelivery`는 건별 전달·재시도를 담당한다.
 회의 출력 폴더 하나에 모든 화자의 WAV와 이벤트를 함께 저장한다. 화자별 하위 폴더는 만들지 않는다.
 
 ```text
-runs/<session_id>/output/
-  user-42-join-1__00:01:12-00:01:38__chunk-3.wav
-  user-73-join-1__00:01:15-00:01:22__chunk-2.wav
+runs/<meeting_id>/output/
+  recording-1__홍길동__00:01:12-00:01:38__chunk-1.wav
+  recording-2__김영희__00:00:10-00:00:15__chunk-2.wav
+  unrecorded__홍길동__23:59:58-00:00:03__chunk-3.wav
   events.jsonl
   delivery.json
 ```
 
-시간은 봇의 첫 회의 입장을 `00:00:00`으로 놓은 공통 상대 시간이다. SDK의 밀리초 PCM timestamp에
-하나의 공통 offset을 적용한 뒤 화자별 샘플 수로 동일하거나 겹치는 SDK callback timestamp를 보정한다.
-SDK timestamp 자체가 과거로 이동하는 경우는 오류로 처리하고, 실제 앞으로의 시간 간격은 gap 이벤트로 기록한다.
-봇 입장 전 실제 회의 시작과의 차이는 현재 얻지 않는다. **클라우드 녹화본별 재생 시간 기준은 아직 미구현이다.**
-목표는 각 클라우드 녹화본의 시작을 `00:00:00`으로 놓는 것이다. 예를 들어 같은 회의에서 1시간짜리
-녹화본 두 개가 만들어지면, 두 번째 녹화본의 10초 위치는 `01:00:10`이 아닌 `00:00:10`이어야 한다.
-첫 녹화본은 자동 녹화로 실제 회의 시작과 일치한다는 운영 조건을 사용한다. 후속 녹화본은 각 녹화본의
-`recording_start`와 녹화 상태 변화로 구분하고, WAV·전사 메타데이터에 녹화본 식별자를 함께 담아야 한다.
-파일들은 계속 하나의 회의 폴더에 저장한다. 현재 worker는 클라우드 상태 콜백을 기록하지만
-그에 따라 WAV 시간축을 바꾸거나 녹화본 식별자를 붙이지 않는다.
-전사 시각은 WAV 청크의 `start_ms`에 ASR의 WAV 내부 시각을 더해 계산한다.
-`speech_start_ms`는 VAD가 감지한 발화 시작이고, WAV의 `start_ms`는 pre-roll을 포함하므로 서로 다를 수 있다.
-일반 회의 조회의 `start_time`을 실제 시작으로 간주하지 않는다. 현재 S2S로 일반 회의 조회는 성공하지만
-진행 중 회의의 실제 시작을 제공하는 Dashboard 조회는 권한 오류 4711을 반환했다.
-[Zoom 공식 실제 시작 시각 안내](https://devforum.zoom.us/t/is-there-any-way-to-distinguish-meeting-has-limitation-or-not/44599/4)
-현재 테스트 회의의 녹화 파일 조회는 `404 / 3301`을 반환해 녹화본 메타데이터를 아직 얻지 못했다.
-[공식 녹화 조회·recording_start 정의](https://developers.zoom.us/docs/api/meetings/)
-파일명의 초 단위 표시는 소수부를 버리며, JSON의 밀리초 값이 정확한 기준이다.
-같은 초에 여러 청크가 생겨도 화자 세션과 순번으로 충돌하지 않는다.
+WAV의 기준은 다음과 같다. S2S scope나 앱 설정을 변경하지 않고 기존 회의 조회와 SDK 상태만 사용한다.
+
+- 입장 시 클라우드 녹화 중이면 일반 회의 조회의 `start_time`을 첫 녹화본의 원점으로 사용한다.
+  Ruby가 `meeting_start_unix_ms`로 변환해 비공개 join 파일에 넣는다. 값이 없거나 잘못된 형식이면
+  봇 입장 전에 오류를 반환한다. 예약 시각과 실제 시작이 다르면 그 차이가 그대로 반영되는 선택이다.
+- SDK의 `중지 → 시작` 통지를 받으면 새 `recording-N`으로 바꾸고, 시작 콜백을 받은 시각을 원점으로 사용한다.
+  두 번째 1시간짜리 녹화본의 10초는 `00:00:10`이다. 반복 START·재접속의 녹화 중 스냅샷은 원점을 초기화하지 않는다.
+- `일시정지 → 재개`는 같은 녹화본이다. 일시정지 시간을 제외하고 녹화본의 재생 시간을 이어간다.
+- 녹화 중이 아니거나 일시정지된 구간도 화자별 WAV로 저장한다. 파일명은 `unrecorded`와 GMT+9 24시간제 시각을 사용한다.
+  `recording_id`는 null, `timestamp_origin`은 `wall_clock_gmt9`, `clock_timezone`은 `UTC+09:00`이다.
+  이때 `start_ms`/`end_ms`는 Unix epoch 밀리초다. 자정에 파일명의 시간이 작아져도 절대 시각은 계속 증가한다.
+
+클라우드 녹화 중 `start_ms`/`end_ms`는 해당 녹화본의 재생 기준 밀리초다.
+`capture_start_ms`/`capture_end_ms`와 이벤트 최상위 `capture_ms`는 봇의 첫 입장 기준으로 계속 증가하고,
+`start_unix_ms`/`end_unix_ms`는 날짜를 포함하는 절대 시각이다. SDK의 PCM timestamp에 공통 offset을 적용하고
+화자별 샘플 수로 동일하거나 겹치는 callback timestamp를 보정한다. SDK timestamp 자체가 과거로 이동하면
+오류로 처리하고, 실제 앞으로의 간격은 gap 이벤트로 기록한다.
+
+녹화 상태 경계에서 WAV를 분할하되 화자·utterance ID를 유지하고 가짜 `speech_on/off`를 만들지 않는다.
+발화 이벤트는 녹화 중 `recording_time_ms`와 `speech_start_ms`/`speech_end_ms`에 녹화본 기준 시각을 담는다.
+녹화가 없으면 이 값은 null이며 `speech_start_unix_ms`/`speech_end_unix_ms`와 capture 시각을 사용한다.
+ASR 결과는 청크 `start_ms`에 WAV 내부 시각을 더한다. 녹화 구간에서는 재생 위치가 되고,
+unrecorded 구간에서는 Unix 시각이 된다. WAV의 `start_ms`는 pre-roll을 포함하므로 VAD 발화 시작과 다를 수 있다.
+
+파일명의 초 단위 표시는 소수부를 버린다. 이름은 Zoom 표시 이름을 사용하고, 경로·제어 문자는 치환하며
+긴 이름은 UTF-8을 보존해 80바이트 이내로 제한한다. 원래 이름은 메타데이터에 보존하고 이름 변경도 반영한다.
+`user_id`·`participant_session_id`는 메타데이터에만 남긴다. 폴더 전체의 청크 순번으로 동명이인도 덮어쓰지 않는다.
+녹화 번호는 이 봇 세션에서 관측한 순서이며 Zoom 녹화 파일 ID가 아니다.
+SDK 콜백 수신 시각을 쓰므로 서버의 정확한 `recording_start`와 일치한다고 보장하지 않는다.
+봇이 입장 전·재접속 중 놓친 녹화 경계나 일시정지는 복원하지 않는다. 웹훅·WebSocket 구독은 사용하지 않는다.
 
 ## 음성 엔진 빌드·재생 검증
 
@@ -269,8 +290,8 @@ endpoint를 비워 두면 로컬 파일 저장만 사용한다. 수신 API에 �
 HTTPS를 사용하며 로컬 테스트에 한해 loopback HTTP를 허용한다.
 
 ```sh
-ruby bin/zoom-bot deliver SESSION_ID
-ruby bin/zoom-bot deliver SESSION_ID --watch
+ruby bin/zoom-bot deliver 12345678901
+ruby bin/zoom-bot deliver 12345678901 --watch
 ```
 
 `deliver`는 현재 준비된 청크를 보내고 종료한다. `--watch`는 250ms 간격으로 새 이벤트를 확인하며
@@ -293,7 +314,9 @@ ruby test/run.rb
 세션 격리·파일 권한, Docker 인자 내 토큰 비노출, 실행 실패 시 파일 보존을 검증한다.
 Zoom HTTP와 Docker는 테스트 대역을 사용하고, WAV multipart 전송은 임시 loopback 서버로 검증한다.
 C++ 테스트는 동시 화자 분리, 30초 경계, 발화 이벤트, pre-roll·overlap, 실제 VAD,
-재입장, 미수신 마감, 부분 프레임, 시간범위 파일명을 검증한다.
+재입장, 미수신 마감, 부분 프레임, 시간범위 파일명을 검증한다. 추가로 늦은 입장의 첫 원점,
+두 번째 녹화본 10초, 중복 START, 경계의 PCM 분할·보존, pause 시간 제외,
+한글·동명이인·이름 변경·파일명 안전성, unrecorded GMT+9 자정 통과와 건별 전달을 검증한다.
 추가 검증: S2S만으로 ZAK 발급, SDK 인증 실패 시 입장 차단, 역할·녹음 권한 확인,
 권한 철회·복원·재접속, SDK 버퍼 수명 종료 후 화자별 WAV 유지, active-audio 원본 이벤트,
 구독 실패 시 rollback, 큐 넘침 오류, 봇만 퇴장.
