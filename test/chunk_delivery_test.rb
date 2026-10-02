@@ -17,6 +17,22 @@ class ChunkDeliveryTest < Minitest::Test
     end
   end
 
+  class CheckpointDelivery < ZoomBot::ChunkDelivery
+    attr_reader :checkpoints
+
+    def initialize(**options)
+      super
+      @checkpoints = []
+    end
+
+    private
+
+    def save_offset(offset)
+      super
+      @checkpoints << offset
+    end
+  end
+
   def chunk(id)
     { 'type' => 'audio.chunk_ready', 'session_id' => 'session',
       'data' => { 'chunk_id' => id, 'participant_session_id' => id, 'sequence' => 1,
@@ -59,6 +75,51 @@ class ChunkDeliveryTest < Minitest::Test
       receiver.failure = nil
       assert_equal 2, ZoomBot::ChunkDelivery.new(output: output, client: receiver).drain
       assert_equal %w[one one two], receiver.requests.map { |event, _| event['data']['chunk_id'] }
+    end
+  end
+
+  def test_raw_events_are_checkpointed_as_a_batch_without_skipping_partial_lines
+    Dir.mktmpdir do |output|
+      events = [{ type: 'sdk.raw_audio.one_way' }] * 100
+      events << write_chunk(output, 'one')
+      events.concat([{ type: 'sdk.raw_share.frame' }] * 100)
+      journal(output, events)
+      complete_size = File.size(File.join(output, 'events.jsonl'))
+      partial = JSON.generate(write_chunk(output, 'two'))
+      File.open(File.join(output, 'events.jsonl'), 'a') { |file| file.write(partial) }
+      receiver = Receiver.new
+      sender = CheckpointDelivery.new(output: output, client: receiver)
+
+      assert_equal 1, sender.drain
+      assert_equal 2, sender.checkpoints.size
+      assert_equal complete_size, JSON.parse(File.read(File.join(output, 'delivery.json'))).fetch('offset')
+      assert_equal 0, sender.drain
+      assert_equal 2, sender.checkpoints.size
+
+      File.open(File.join(output, 'events.jsonl'), 'a') { |file| file.write("\n") }
+      assert_equal 1, ZoomBot::ChunkDelivery.new(output: output, client: receiver).drain
+      assert_equal %w[one two], receiver.requests.map { |event, _| event['data']['chunk_id'] }
+    end
+  end
+
+  def test_successful_chunk_is_checkpointed_before_a_later_delivery_fails
+    Dir.mktmpdir do |output|
+      first = write_chunk(output, 'one')
+      journal(output, [first, { type: 'speech_on' }, write_chunk(output, 'two')])
+      receiver = Receiver.new
+      post = receiver.method(:post)
+      receiver.define_singleton_method(:post) do |event, path|
+        self.failure = ZoomBot::DeliveryError.new('HTTP 503', retryable: true) if event['data']['chunk_id'] == 'two'
+        post.call(event, path)
+      end
+      sender = ZoomBot::ChunkDelivery.new(output: output, client: receiver)
+      assert_raises(ZoomBot::DeliveryError) { sender.drain }
+      assert_equal (JSON.generate(first) + "\n").bytesize,
+                   JSON.parse(File.read(File.join(output, 'delivery.json'))).fetch('offset')
+
+      restarted = Receiver.new
+      assert_equal 1, ZoomBot::ChunkDelivery.new(output: output, client: restarted).drain
+      assert_equal ['two'], restarted.requests.map { |event, _| event['data']['chunk_id'] }
     end
   end
 

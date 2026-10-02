@@ -21,6 +21,7 @@ module ZoomBot
           raise Error, 'Event journal is shorter than saved delivery progress' if offset > journal.size
 
           journal.seek(offset)
+          saved_offset = offset
           while (line = journal.gets)
             break unless line.end_with?("\n")
 
@@ -28,9 +29,12 @@ module ZoomBot
             if event.fetch('type') == 'audio.chunk_ready'
               @client.post(event, wav_path(event.fetch('data')))
               delivered += 1
+              save_offset(journal.pos)
+              saved_offset = journal.pos
             end
-            save_offset(journal.pos)
+            offset = journal.pos
           end
+          save_offset(offset) if offset > saved_offset
         end
         delivered
       end
