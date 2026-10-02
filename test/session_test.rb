@@ -9,7 +9,8 @@ class SessionTest < Minitest::Test
     tokens = Struct.new(:token).new('access')
     ZoomBot::SessionPreparer.new(ZoomBot::ZoomApiClient.new(tokens, http: http),
                                 ZoomBot::SdkSignature.new(settings), root: root,
-                                bot_user_email: settings.fetch('ZOOM_BOT_USER_EMAIL'))
+                                bot_user_email: settings.fetch('ZOOM_BOT_USER_EMAIL'),
+                                display_name: settings.fetch('ZOOM_BOT_DISPLAY_NAME'))
   end
 
   def test_prepare_uses_bot_email_zak_and_keeps_actual_host_and_secrets_private

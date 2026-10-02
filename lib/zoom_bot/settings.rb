@@ -13,6 +13,8 @@ module ZoomBot
       raise Error, "Missing environment variables: #{missing.join(', ')}" unless missing.empty?
 
       @values = KEYS.to_h { |key| [key, env.fetch(key)] }
+      display_name = env['ZOOM_BOT_DISPLAY_NAME'].to_s.strip
+      @values['ZOOM_BOT_DISPLAY_NAME'] = display_name.empty? ? 'Meeting Recorder' : display_name
       @values['ZOOM_BOT_USER_EMAIL'] = @values.fetch('ZOOM_BOT_USER_EMAIL').strip
       unless @values.fetch('ZOOM_BOT_USER_EMAIL').match?(/\A[^\s@]+@[^\s@]+\z/)
         raise Error, 'ZOOM_BOT_USER_EMAIL must be an email address'

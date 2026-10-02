@@ -56,6 +56,10 @@ SDK JWT는 앱 인증, 봇 사용자 ZAK는 그 사용자의 Zoom identity로 �
 Linux SDK의 `SDK_UT_WITHOUT_LOGIN` + `userZAK` 입장과 SDK의 상시 SSO 로그인 세션은 별개다.
 [공식 인증 문서](https://developers.zoom.us/docs/meeting-sdk/auth/)
 
+`ZOOM_BOT_DISPLAY_NAME`은 봇의 Zoom 입장 표시 이름이다. 미설정·빈 값은 `Meeting Recorder`를 사용한다.
+예를 들어 `.env`에 `ZOOM_BOT_DISPLAY_NAME='수업 녹음봇'`을 넣고 환경변수를 다시 로드하면
+다음 `prepare`·`run`부터 해당 이름을 사용한다.
+
 호스트에게 적용되는 `Record to computer files` 설정에서 `Internal meeting participants`와
 `Auto approve their permission requests`를 켜면 내부 참가자의 녹화 요청을 자동 승인할 수 있다.
 SDK는 권한이 없는 일반 참가자일 때 지원 여부를 확인하고 회의당 한 번만 요청한다.
