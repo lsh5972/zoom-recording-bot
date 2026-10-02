@@ -16,12 +16,22 @@ module ZoomBot
       raise Error, 'Zoom returned a different meeting ID' unless meeting['id'].to_s == meeting_id
       host_id = meeting['host_id']
       raise Error, 'Meeting response lacks host_id' unless host_id.is_a?(String) && !host_id.empty?
+      begin
+        start_time = meeting.fetch('start_time')
+        unless start_time.is_a?(String) && start_time.match?(/(?:Z|[+-]\d{2}:?\d{2})\z/)
+          raise ArgumentError
+        end
+        meeting_start_unix_ms = (Time.iso8601(start_time).to_r * 1000).floor
+        raise ArgumentError unless meeting_start_unix_ms.positive?
+      rescue KeyError, ArgumentError
+        raise Error, 'Meeting response lacks a valid start_time for the first recording'
+      end
 
       zak = @api.user_zak(@bot_user_email)
       session_id = SecureRandom.uuid
       credentials = {
         schema_version: 1, session_id: session_id, meeting_id: meeting_id, host_user_id: host_id,
-        bot_user_email: @bot_user_email,
+        bot_user_email: @bot_user_email, meeting_start_unix_ms: meeting_start_unix_ms,
         passcode: meeting.fetch('password', '').to_s, display_name: 'Meeting Recorder',
         sdk_jwt: @signatures.issue, user_zak: zak, prepared_at: @clock.call.utc.iso8601
       }
@@ -31,7 +41,7 @@ module ZoomBot
       FileUtils.mkdir_p(File.join(directory, 'output'), mode: 0o700)
       write(File.join(directory, 'join.json'), credentials)
       metadata = { schema_version: 1, session_id: session_id, meeting_id: meeting_id,
-                   host_user_id: host_id, bot_user_email: @bot_user_email,
+                   host_user_id: host_id, bot_user_email: @bot_user_email, meeting_start_unix_ms: meeting_start_unix_ms,
                    state: 'prepared', prepared_at: credentials[:prepared_at] }
       write(File.join(directory, 'session.json'), metadata)
       { session_id: session_id, directory: directory }

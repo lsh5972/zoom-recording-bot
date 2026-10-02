@@ -415,6 +415,9 @@ void real_pcm_fixture_through_sdk_callbacks() {
   for (const auto& chunk : chunks) {
     speakers.insert(chunk["data"]["user_id"].get<uint32_t>());
     const auto path = chunk["data"]["wav_path"].get<std::string>();
+    const auto display = chunk["data"]["user_id"] == 42 ? "Alice" : "Bob";
+    require(chunk["data"]["display_name"] == display && path.find("recording-1__" + std::string(display) + "__") == 0,
+            "SDK participant names must reach per-speaker WAV filenames and metadata");
     require(std::filesystem::path(path).parent_path().empty(), "Every speaker WAV must stay in one meeting folder");
     SF_INFO wav_info{};
     auto* wav = sf_open((output.root / path).c_str(), SFM_READ, &wav_info);
@@ -433,6 +436,41 @@ void real_pcm_fixture_through_sdk_callbacks() {
   require(preserved, "SDK active-audio list must be preserved separately from VAD speech events");
 }
 
+void cloud_status_and_renames_reach_the_capture_consumer() {
+  Backend sdk; backend = &sdk; Output output;
+  CaptureRuntime capture(output.root, "session");
+  {
+    ZoomSession session(config(), capture); admit(session, sdk);
+    auto* listener = sdk.meeting.recording.listener;
+    listener->onCloudRecordingStatus(Recording_Start);
+    listener->onCloudRecordingStatus(Recording_Start);
+    listener->onCloudRecordingStatus(Recording_Pause);
+    listener->onCloudRecordingStatus(Recording_Pause);
+    listener->onCloudRecordingStatus(Recording_Start);
+    listener->onCloudRecordingStatus(Recording_Stop);
+    listener->onCloudRecordingStatus(Recording_Start);
+    sdk.meeting.participants.alice.name = "홍길동";
+    List<uint32_t> renamed; renamed.items = {42};
+    sdk.meeting.participants.listener->onUserNamesChanged(&renamed);
+    session.tick();
+    require(sdk.meeting.recording.starts == 1 && sdk.raw.subscriptions == 1,
+            "Cloud status notifications must not restart raw capture or control cloud recording");
+    session.stop("test_stop");
+  }
+  capture.close();
+  require(!capture.failed(), "Cloud state changes and participant renames must drain without failure");
+  const auto states = output.events("cloud.recording_state");
+  require(states.size() == 5 && states[0]["data"]["recording_id"] == "recording-1" &&
+          states[2]["data"]["recording_id"] == "recording-1" && states[4]["data"]["recording_id"] == "recording-2",
+          "Initial and repeated SDK starts must be distinguished from stop/start and pause/resume");
+  require(output.events("participant.renamed").back()["data"]["display_name"] == "홍길동",
+          "SDK rename callback must refresh the stored participant display name");
+  int callbacks = 0;
+  for (const auto& event : output.events("sdk.callback"))
+    if (event["data"]["callback"] == "onCloudRecordingStatus") ++callbacks;
+  require(callbacks == 7, "Duplicate cloud status callbacks must remain in the exhaustive event journal");
+}
+
 int main() {
   try {
     rejected_auth_never_joins(); sdk_permission_controls_recording();
@@ -440,7 +478,8 @@ int main() {
     revocation_stops_and_grant_resumes(); reconnect_and_role_changes_preserve_permissions(); delayed_audio_and_subscription_failure();
     combined_recording_notices();
     real_pcm_fixture_through_sdk_callbacks();
-    std::cout << "15 SDK adapter scenarios passed (test doubles, no live meeting)\n";
+    cloud_status_and_renames_reach_the_capture_consumer();
+    std::cout << "16 SDK adapter scenarios passed (test doubles, no live meeting)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

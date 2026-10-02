@@ -116,4 +116,50 @@ class ChunkDeliveryTest < Minitest::Test
       end
     end
   end
+
+  def test_recording_filename_with_korean_speaker_is_delivered_with_metadata
+    Dir.mktmpdir do |output|
+      event = chunk('one')
+      event['data'].merge!('recording_id' => 'recording-2', 'speaker_label' => '홍길동',
+                          'display_name' => '홍길동', 'file_sequence' => 3,
+                          'wav_path' => 'recording-2__홍길동__00:00:01-00:00:02__chunk-3.wav')
+      File.binwrite(File.join(output, event['data']['wav_path']), 'RIFF-cloud-file')
+      journal(output, [event])
+      receiver = Receiver.new
+      assert_equal 1, ZoomBot::ChunkDelivery.new(output: output, client: receiver).drain
+      assert_equal 'recording-2', receiver.requests[0][0]['data']['recording_id']
+      assert_equal '홍길동', receiver.requests[0][0]['data']['display_name']
+      assert_equal 'RIFF-cloud-file', receiver.requests[0][1]
+    end
+  end
+
+  def test_recording_speaker_paths_and_file_sequences_are_validated
+    ['../private', "a\nb", 'a:b', '', 'a' * 81].each do |label|
+      Dir.mktmpdir do |output|
+        event = chunk('one')
+        event['data'].merge!('recording_id' => 'recording-2', 'speaker_label' => label, 'file_sequence' => 3)
+        journal(output, [event])
+        receiver = Receiver.new
+        assert_raises(ZoomBot::Error) { ZoomBot::ChunkDelivery.new(output: output, client: receiver).drain }
+        assert_empty receiver.requests
+      end
+    end
+  end
+
+  def test_unrecorded_gmt9_midnight_filename_keeps_absolute_metadata
+    Dir.mktmpdir do |output|
+      event = chunk('one')
+      event['data'].merge!('recording_id' => nil, 'timestamp_origin' => 'wall_clock_gmt9',
+                          'speaker_label' => '홍길동', 'file_sequence' => 1,
+                          'start_ms' => 53998000, 'end_ms' => 54003000,
+                          'wav_path' => 'unrecorded__홍길동__23:59:58-00:00:03__chunk-1.wav')
+      File.binwrite(File.join(output, event['data']['wav_path']), 'RIFF-midnight')
+      journal(output, [event])
+      receiver = Receiver.new
+      assert_equal 1, ZoomBot::ChunkDelivery.new(output: output, client: receiver).drain
+      assert_equal 53998000, receiver.requests[0][0]['data']['start_ms']
+      assert_equal 54003000, receiver.requests[0][0]['data']['end_ms']
+      assert_nil receiver.requests[0][0]['data']['recording_id']
+    end
+  end
 end

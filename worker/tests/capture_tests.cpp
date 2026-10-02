@@ -114,6 +114,24 @@ int main() {
     }
     {
       Output output;
+      CaptureRuntime capture(output.root, "session", 32 * 1024 * 1024, 1700000000000);
+      capture.admitted();
+      capture.cloud_recording(0);
+      capture.cloud_recording(0);
+      capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, 9000);
+      capture.close();
+      require(!capture.failed(), "A configured meeting API origin must reach the capture consumer");
+      int starts = 0;
+      for (const auto& event : output.events()) if (event["type"] == "cloud.recording_state") {
+        ++starts;
+        require(event["data"]["recording_start_unix_ms"] == 1700000000000 &&
+                event["data"]["timestamp_origin"] == "meeting_api.start_time",
+                "SDK status must anchor the first recording to the private join configuration");
+      }
+      require(starts == 1, "Duplicate starts must not reset the configured recording clock");
+    }
+    {
+      Output output;
       const auto path = output.root / "join.json";
       std::ofstream(path) << "{\"sdk_jwt\":\"never-print-this-secret\",";
       try { JoinConfig::read(path); throw std::runtime_error("Invalid config accepted"); }
@@ -121,7 +139,25 @@ int main() {
         require(std::string(error.what()) == "Invalid or unreadable join configuration", "Config errors must redact parser text");
       }
     }
-    std::cout << "9 capture/config cases passed\n";
+    {
+      Output output;
+      const auto path = output.root / "join.json";
+      nlohmann::json data = {{"schema_version", 1}, {"session_id", "00000000-0000-4000-8000-000000000001"},
+                            {"meeting_id", "123456789"}, {"host_user_id", "host"}, {"passcode", "pass"},
+                            {"display_name", "Recorder"}, {"sdk_jwt", "secret-jwt"}, {"user_zak", "secret-zak"},
+                            {"meeting_start_unix_ms", 1700000000123}};
+      std::ofstream(path) << data;
+      require(JoinConfig::read(path).meeting_start_unix_ms == 1700000000123,
+              "Native config must preserve the Ruby meeting start timestamp in milliseconds");
+      data.erase("meeting_start_unix_ms");
+      std::ofstream(path) << data;
+      try { JoinConfig::read(path); throw std::runtime_error("Missing origin accepted"); }
+      catch (const std::runtime_error& error) {
+        require(std::string(error.what()) == "Invalid or unreadable join configuration",
+                "Missing origins must be rejected without echoing credentials");
+      }
+    }
+    std::cout << "11 capture/config cases passed\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, signal_handler);
   try {
     auto config = zoom_bot::JoinConfig::read(argv[2]);
-    zoom_bot::CaptureRuntime capture(argv[4], config.session_id);
+    zoom_bot::CaptureRuntime capture(argv[4], config.session_id, 32 * 1024 * 1024, config.meeting_start_unix_ms);
     bool failed = false;
     {
       zoom_bot::ZoomSession session(std::move(config), capture);

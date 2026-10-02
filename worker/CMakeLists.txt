@@ -24,7 +24,7 @@ FetchContent_MakeAvailable(libfvad json)
 
 add_library(zoom_bot_audio
   src/event_journal.cpp src/wav_writer.cpp src/speech_detector.cpp
-  src/audio_segmenter.cpp src/audio_pipeline.cpp
+  src/audio_segmenter.cpp src/audio_pipeline.cpp src/recording_timeline.cpp
   src/join_config.cpp src/capture_runtime.cpp
 )
 target_include_directories(zoom_bot_audio PUBLIC include PRIVATE ${libfvad_SOURCE_DIR}/include)

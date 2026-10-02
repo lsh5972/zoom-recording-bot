@@ -40,7 +40,9 @@ int main(int argc, char** argv) {
     }
     EventJournal events(argv[first + 1], session_id);
     WavWriter wav(argv[first + 1]);
-    AudioPipeline pipeline(events, wav);
+    RecordingTimeline recordings;
+    recordings.change(0, 0, 0, 0);
+    AudioPipeline pipeline(events, wav, recordings);
     events.append("capture.started", 0, {{"source", "wav_replay"}, {"realtime", realtime}});
     for (const auto& track : tracks) pipeline.joined(track.user_id, "Replay", 0);
     const auto started = std::chrono::steady_clock::now();

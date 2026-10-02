@@ -14,15 +14,18 @@ int64_t steady_ms() {
 }
 
 CaptureRuntime::CaptureRuntime(const std::filesystem::path& output, const std::string& session_id,
-                               size_t capacity)
-    : events_(output, session_id), wav_(output), audio_(events_, wav_), capacity_(capacity),
+                               size_t capacity, int64_t meeting_start_unix_ms)
+    : events_(output, session_id), wav_(output), audio_(events_, wav_, recordings_), capacity_(capacity),
+      meeting_start_unix_ms_(meeting_start_unix_ms),
       thread_([this] { consume(); }) {}
 
 CaptureRuntime::~CaptureRuntime() { close(); }
 
 void CaptureRuntime::admitted() {
   int64_t unset = -1;
-  origin_ms_.compare_exchange_strong(unset, steady_ms());
+  if (origin_ms_.compare_exchange_strong(unset, steady_ms()))
+    admission_unix_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
 int64_t CaptureRuntime::now_ms() const {
@@ -61,6 +64,11 @@ void CaptureRuntime::left(uint32_t user_id) noexcept {
   item.packet.user_id = user_id;
   push(std::move(item));
 }
+void CaptureRuntime::renamed(uint32_t user_id, std::string name) noexcept {
+  Item item{Kind::Renamed, now_ms(), std::move(name), {}};
+  item.packet.user_id = user_id;
+  push(std::move(item));
+}
 void CaptureRuntime::pcm(PcmPacket packet, uint64_t source_ms) noexcept {
   Item item{Kind::Pcm, now_ms(), {}, {}};
   item.packet = std::move(packet);
@@ -69,6 +77,11 @@ void CaptureRuntime::pcm(PcmPacket packet, uint64_t source_ms) noexcept {
 }
 void CaptureRuntime::pause(std::string reason) noexcept {
   push({Kind::Pause, now_ms(), std::move(reason), {}});
+}
+
+void CaptureRuntime::cloud_recording(int status) noexcept {
+  if (origin_ms_ < 0) return;  // Pre-admission notifications are still kept in sdk.callback.
+  push({Kind::CloudRecording, now_ms(), {}, {{"status", status}}});
 }
 
 void CaptureRuntime::close() {
@@ -122,11 +135,32 @@ void CaptureRuntime::consume() noexcept {
           source_clocks.erase(item.packet.user_id);
           audio_.left(item.packet.user_id, item.at_ms);
           break;
+        case Kind::Renamed:
+          audio_.renamed(item.packet.user_id, item.text, item.at_ms);
+          break;
         case Kind::Pause:
           audio_.pause(item.text, item.at_ms);
           source_clocks.clear();
           if (item.text == "reconnecting") source_offset.reset();
           break;
+        case Kind::CloudRecording: {
+          const auto status = item.data.at("status").get<int>();
+          const auto first_origin = meeting_start_unix_ms_ > 0 ? meeting_start_unix_ms_ - admission_unix_ms_ : 0;
+          if (recordings_.change(status, item.at_ms, first_origin, admission_unix_ms_)) {
+            const auto reason = status == 0 ? "cloud_recording_started" :
+                                status == 3 ? "cloud_recording_paused" : "cloud_recording_stopped";
+            audio_.recording_changed(reason, item.at_ms);
+            const auto* span = recordings_.at(item.at_ms);
+            item.data["recording_id"] = span && span->sequence > 0 ? nlohmann::json(span->id()) : nlohmann::json(nullptr);
+            if (span) {
+              item.data["timestamp_origin"] = span->origin_source;
+              item.data["recording_start_unix_ms"] = span->sequence > 0 ?
+                  nlohmann::json(span->recording_start_unix_ms) : nlohmann::json(nullptr);
+            }
+            events_.append("cloud.recording_state", item.at_ms, std::move(item.data));
+          }
+          break;
+        }
         case Kind::Pcm: {
           auto& packet = item.packet;
           if (packet.rate <= 0 || packet.channels <= 0 || item.source_ms > static_cast<uint64_t>(INT64_MAX))

@@ -7,13 +7,32 @@
 #include <unistd.h>
 
 namespace zoom_bot {
+std::string WavWriter::speaker_label(const std::string& display_name) {
+  std::string label = display_name;
+  for (auto& character : label) {
+    const auto byte = static_cast<unsigned char>(character);
+    if (byte < 32 || byte == 127 || std::string("/\\:*?\"<>|").find(character) != std::string::npos)
+      character = '_';
+  }
+  if (label.size() > 80) {
+    size_t end = 80;
+    while (end > 0 && (static_cast<unsigned char>(label[end]) & 0xc0) == 0x80) --end;
+    label.resize(end);
+  }
+  const auto first = label.find_first_not_of(" .");
+  if (first == std::string::npos) return "speaker";
+  return label.substr(first, label.find_last_not_of(" .") - first + 1);
+}
+
 WavWriter::WavWriter(std::filesystem::path output) : output_(std::move(output)) {
   std::filesystem::create_directories(output_);
 }
 
 std::string WavWriter::write(const std::string& relative_path, int rate, int channels,
                            const std::vector<int16_t>& samples) {
-  const std::regex filename("[a-zA-Z0-9_-]+__[0-9]{2,}:[0-9]{2}:[0-9]{2}-[0-9]{2,}:[0-9]{2}:[0-9]{2}__chunk-[0-9]+\\.wav");
+  const std::regex filename("(recording-[1-9][0-9]*|unrecorded)__[^/\\\\:*?\"<>|\\x00-\\x1f\\x7f]+__"
+                            "[0-9]{2,}:[0-9]{2}:[0-9]{2}-[0-9]{2,}:[0-9]{2}:[0-9]{2}__"
+                            "chunk-[0-9]+\\.wav");
   if (!std::regex_match(relative_path, filename) || samples.empty() ||
       channels <= 0 || samples.size() % channels != 0)
     throw std::invalid_argument("Invalid WAV chunk");

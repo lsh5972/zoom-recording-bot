@@ -13,7 +13,7 @@ class SessionTest < Minitest::Test
   end
 
   def test_prepare_uses_bot_email_zak_and_keeps_actual_host_and_secrets_private
-    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'actual-host', 'password' => 'meeting-secret' },
+    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'actual-host', 'start_time' => '2026-10-01T10:00:00.123Z', 'password' => 'meeting-secret' },
                         { 'token' => 'secret-zak' })
     Dir.mktmpdir do |root|
       result = preparer(root, http).prepare('123 456 789')
@@ -24,6 +24,7 @@ class SessionTest < Minitest::Test
       assert_equal 'recorder+bot@example.com', join['bot_user_email']
       assert_equal 'secret-zak', join['user_zak']
       assert_equal 'meeting-secret', join['passcode']
+      assert_equal 1790848800123, join['meeting_start_unix_ms']
       assert_equal 0o600, File.stat(path).mode & 0o777
       assert_equal 0o700, File.stat(result[:directory]).mode & 0o777
       assert_equal '/v2/users/recorder%2Bbot%40example.com/token', http.requests.last.first.path
@@ -45,6 +46,18 @@ class SessionTest < Minitest::Test
     end
   end
 
+  def test_missing_or_invalid_start_time_fails_before_zak_or_private_files
+    [nil, 'not-a-time', 123, '2026-10-01T10:00:00'].each do |start_time|
+      http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host', 'start_time' => start_time })
+      Dir.mktmpdir do |root|
+        error = assert_raises(ZoomBot::Error) { preparer(root, http).prepare('123456789') }
+        assert_includes error.message, 'start_time'
+        assert_equal 1, http.requests.length
+        assert_empty Dir.children(root)
+      end
+    end
+  end
+
   def test_missing_or_mismatched_meeting_host_never_requests_zak
     [{ 'id' => 123456789 }, { 'id' => 987654321, 'host_id' => 'wrong-host' }].each do |meeting|
       http = FakeHttp.new(meeting)
@@ -57,8 +70,8 @@ class SessionTest < Minitest::Test
   end
 
   def test_distinct_runs_do_not_reuse_zak_or_overwrite_old_session
-    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host' }, { 'token' => 'zak-one' },
-                        { 'id' => 123456789, 'host_id' => 'host' }, { 'token' => 'zak-two' })
+    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host', 'start_time' => '2026-10-01T10:00:00Z' }, { 'token' => 'zak-one' },
+                        { 'id' => 123456789, 'host_id' => 'host', 'start_time' => '2026-10-01T10:00:00Z' }, { 'token' => 'zak-two' })
     Dir.mktmpdir do |root|
       service = preparer(root, http)
       one = service.prepare('123456789')
@@ -74,7 +87,7 @@ class SessionTest < Minitest::Test
     success = Struct.new(:success?).new(true)
     command = ->(*args) { calls << args; ['', '', success] }
     supervisor = ZoomBot::BotSupervisor.new(image: 'zoom-bot-worker:test', command: command)
-    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host' }, { 'token' => 'never-in-argv' })
+    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host', 'start_time' => '2026-10-01T10:00:00Z' }, { 'token' => 'never-in-argv' })
     Dir.mktmpdir do |root|
       session = preparer(root, http).prepare('123456789')
       supervisor.check_image!
@@ -95,7 +108,7 @@ class SessionTest < Minitest::Test
     command = ->(*_args) { ['private-output', 'private-error', failure] }
     supervisor = ZoomBot::BotSupervisor.new(image: 'zoom-bot-worker:test', command: command)
     assert_raises(ZoomBot::Error) { supervisor.check_image! }
-    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host' }, { 'token' => 'secret-zak' })
+    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host', 'start_time' => '2026-10-01T10:00:00Z' }, { 'token' => 'secret-zak' })
     Dir.mktmpdir do |root|
       session = preparer(root, http).prepare('123456789')
       error = assert_raises(ZoomBot::Error) { supervisor.start(session) }

@@ -40,8 +40,14 @@ ZoomSession::ZoomSession(JoinConfig config, CaptureRuntime& capture)
   participant_events_.after_onUserJoin = [this](IList<unsigned int>* ids, const zchar_t*) { users(ids, true); };
   participant_events_.after_onUserLeft = [this](IList<unsigned int>* ids, const zchar_t*) { users(ids, false); };
   participant_events_.after_onUserNamesChanged = [this](IList<unsigned int>* ids) {
-    if (ids && participants_) for (int i = 0; i < ids->GetCount(); ++i)
-      capture_.event("participant.updated", user_snapshot(participants_->GetUserByUserID(ids->GetItem(i))));
+    if (ids && participants_) for (int i = 0; i < ids->GetCount(); ++i) {
+      auto* user = participants_->GetUserByUserID(ids->GetItem(i));
+      capture_.event("participant.updated", user_snapshot(user));
+      if (user) capture_.renamed(user->GetUserID(), name(user));
+    }
+  };
+  recording_events_.after_onCloudRecordingStatus = [this](RecordingStatus status) {
+    capture_.cloud_recording(static_cast<int>(status));
   };
   participant_events_.after_onHostChangeNotification = [this](unsigned int) { defer([this] { try_recording(); }); };
   participant_events_.after_onCoHostChangeNotification = [this](unsigned int, bool) { defer([this] { try_recording(); }); };
@@ -280,6 +286,7 @@ void ZoomSession::status(MeetingStatus state, int result) {
     in_meeting_ = true;
     register_events(true);
     snapshot_participants();
+    capture_.cloud_recording(static_cast<int>(recording_->GetCloudRecordingStatus()));
     capture_.event("meeting.admitted", {{"self", user_snapshot(participants_->GetMySelfUser())}});
     auto* self = participants_->GetMySelfUser();
     if (!self || self->GetAudioJoinType() == AUDIOTYPE_NONE) check(audio_->JoinVoip(), "join_voip");
@@ -345,7 +352,7 @@ void ZoomSession::try_recording() {
                                        {"callbacks", {"onMixedAudioRawDataReceived", "onOneWayAudioRawDataReceived",
                                                       "onShareAudioRawDataReceived", "onOneWayInterpreterAudioRawDataReceived"}}});
   capture_.event("capture.started", {{"self_user_id", self->GetUserID()}, {"sample_rate_requested", 32000},
-                                      {"channels_requested", 1}, {"timestamp_origin", "first_bot_admission"}});
+                                      {"channels_requested", 1}, {"timestamp_origin", "cloud_recording"}});
 }
 
 void ZoomSession::pause_recording(const std::string& reason) {

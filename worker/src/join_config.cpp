@@ -13,10 +13,13 @@ JoinConfig JoinConfig::read(const std::filesystem::path& path) {
     if (data.at("schema_version") != 1) throw std::runtime_error("schema");
     JoinConfig config{data.at("session_id"), data.at("meeting_id"), data.at("host_user_id"),
                       data.at("passcode"), data.at("display_name"), data.at("sdk_jwt"), data.at("user_zak")};
+    if (!data.at("meeting_start_unix_ms").is_number_integer()) throw std::runtime_error("start_time");
+    config.meeting_start_unix_ms = data.at("meeting_start_unix_ms");
     if (!std::regex_match(config.session_id, std::regex("[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")) ||
         !std::regex_match(config.meeting_id, std::regex("[1-9][0-9]{8,10}")) ||
         config.host_user_id.empty() || config.display_name.empty() ||
-        config.sdk_jwt.empty() || config.user_zak.empty()) throw std::runtime_error("fields");
+        config.sdk_jwt.empty() || config.user_zak.empty() || config.meeting_start_unix_ms <= 0)
+      throw std::runtime_error("fields");
     return config;
   } catch (...) {
     // JSON parser errors can contain credential values. Never forward their text.

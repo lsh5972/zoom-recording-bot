@@ -52,6 +52,21 @@ module ZoomBot
         raise Error, 'Invalid finalized WAV path'
       end
       relative = "#{participant}__#{clock_label(start_ms)}-#{clock_label(end_ms)}__chunk-#{sequence}.wav"
+      if metadata.key?('recording_id')
+        recording = metadata.fetch('recording_id')
+        label = metadata.fetch('speaker_label')
+        file_sequence = metadata.fetch('file_sequence')
+        wall_clock = recording.nil? && metadata['timestamp_origin'] == 'wall_clock_gmt9'
+        unless (wall_clock || (recording.is_a?(String) && recording.match?(/\Arecording-[1-9]\d*\z/))) &&
+               label.is_a?(String) && !label.empty? && label.bytesize <= 80 &&
+               !label.match?(/[\/\\:*?"<>|\x00-\x1f\x7f]/) &&
+               file_sequence.is_a?(Integer) && file_sequence.positive?
+          raise Error, 'Invalid finalized WAV path'
+        end
+        start_label = clock_label(wall_clock ? (start_ms + 9 * 3600000) % 86400000 : start_ms)
+        end_label = clock_label(wall_clock ? (end_ms + 9 * 3600000) % 86400000 : end_ms)
+        relative = "#{recording || 'unrecorded'}__#{label}__#{start_label}-#{end_label}__chunk-#{file_sequence}.wav"
+      end
       raise Error, 'Invalid finalized WAV path' unless metadata.fetch('wav_path') == relative
 
       path = File.realpath(File.join(@output, metadata.fetch('wav_path')))

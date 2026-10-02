@@ -16,17 +16,21 @@ struct PcmPacket {
 // Run on the capture consumer, not inside SDK callbacks.
 class AudioPipeline {
  public:
-  AudioPipeline(EventJournal& events, WavWriter& wav);
+  AudioPipeline(EventJournal& events, WavWriter& wav, RecordingTimeline& recordings);
   void joined(uint32_t user_id, const std::string& display_name, int64_t at_ms);
   void left(uint32_t user_id, int64_t at_ms);
+  void renamed(uint32_t user_id, const std::string& display_name, int64_t at_ms);
   void consume(PcmPacket packet);
   void advance(int64_t now_ms);
   void pause(const std::string& reason, int64_t at_ms);
+  void recording_changed(const std::string& reason, int64_t at_ms);
   void finish(const std::string& reason, int64_t at_ms);
 
  private:
   struct Stream {
-    Stream(const std::string& participant_id, const PcmPacket& packet, EventJournal& events, WavWriter& wav,
+    Stream(const std::string& participant_id, const std::string& display_name, const PcmPacket& packet,
+           EventJournal& events, WavWriter& wav,
+           RecordingTimeline& recordings,
            uint64_t& utterance_number, uint64_t& chunk_number);
     int rate, channels;
     int64_t origin_ms, buffer_ms;
@@ -40,12 +44,13 @@ class AudioPipeline {
     void reset(int64_t start_ms);
   };
   struct Participant {
-    std::string id;
+    std::string id, display_name;
     uint64_t utterance_number = 0, chunk_number = 0;
     std::unique_ptr<Stream> stream;
   };
   EventJournal& events_;
   WavWriter& wav_;
+  RecordingTimeline& recordings_;
   std::map<uint32_t, Participant> participants_;
   std::map<uint32_t, uint64_t> generations_;
 };

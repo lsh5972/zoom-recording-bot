@@ -4,13 +4,14 @@
 #include <stdexcept>
 
 namespace zoom_bot {
-AudioPipeline::AudioPipeline(EventJournal& events, WavWriter& wav) : events_(events), wav_(wav) {}
+AudioPipeline::AudioPipeline(EventJournal& events, WavWriter& wav, RecordingTimeline& recordings)
+    : events_(events), wav_(wav), recordings_(recordings) {}
 
-AudioPipeline::Stream::Stream(const std::string& participant_id, const PcmPacket& packet,
-                             EventJournal& events, WavWriter& wav,
+AudioPipeline::Stream::Stream(const std::string& participant_id, const std::string& display_name, const PcmPacket& packet,
+                             EventJournal& events, WavWriter& wav, RecordingTimeline& recordings,
                              uint64_t& utterance_number, uint64_t& chunk_number)
     : rate(packet.rate), channels(packet.channels), origin_ms(packet.start_ms), buffer_ms(packet.start_ms),
-      detector(rate), segmenter(participant_id, packet.user_id, rate, channels, events, wav,
+      detector(rate), segmenter(participant_id, display_name, packet.user_id, rate, channels, events, wav, recordings,
                                 utterance_number, chunk_number) {}
 
 int64_t AudioPipeline::Stream::expected_ms() const {
@@ -30,16 +31,27 @@ void AudioPipeline::Stream::drain() {
   auto padded = pending;
   padded.resize(static_cast<size_t>(rate / 100 * channels), 0);
   const bool voiced = detector.voiced(padded, channels);
+  const auto duration = (pending.size() / channels * 1000 + rate - 1) / rate;
   segmenter.consume({buffer_ms, std::move(pending)}, voiced);
+  buffer_ms += static_cast<int64_t>(duration);
   pending.clear();
 }
 
 void AudioPipeline::joined(uint32_t user_id, const std::string& display_name, int64_t at_ms) {
   if (participants_.count(user_id)) left(user_id, at_ms);
   const auto id = "user-" + std::to_string(user_id) + "-join-" + std::to_string(++generations_[user_id]);
-  participants_.emplace(user_id, Participant{id, 0, 0, nullptr});
+  participants_.emplace(user_id, Participant{id, display_name, 0, 0, nullptr});
   events_.append("participant.joined", at_ms,
                  {{"user_id", user_id}, {"participant_session_id", id}, {"display_name", display_name}});
+}
+
+void AudioPipeline::renamed(uint32_t user_id, const std::string& display_name, int64_t at_ms) {
+  auto found = participants_.find(user_id);
+  if (found == participants_.end()) return;
+  found->second.display_name = display_name;
+  if (found->second.stream) found->second.stream->segmenter.renamed(display_name);
+  events_.append("participant.renamed", at_ms,
+                 {{"user_id", user_id}, {"participant_session_id", found->second.id}, {"display_name", display_name}});
 }
 
 void AudioPipeline::left(uint32_t user_id, int64_t at_ms) {
@@ -70,7 +82,7 @@ void AudioPipeline::consume(PcmPacket packet) {
     participant.stream.reset();
   }
   if (!participant.stream) {
-    participant.stream = std::make_unique<Stream>(participant.id, packet, events_, wav_,
+    participant.stream = std::make_unique<Stream>(participant.id, participant.display_name, packet, events_, wav_, recordings_,
                                                 participant.utterance_number, participant.chunk_number);
     events_.append("audio.format", packet.start_ms,
                    {{"participant_session_id", participant.id}, {"user_id", packet.user_id},
@@ -129,6 +141,16 @@ void AudioPipeline::pause(const std::string& reason, int64_t at_ms) {
     }
   }
   events_.append("capture.stopped", at_ms, {{"reason", reason}});
+}
+
+void AudioPipeline::recording_changed(const std::string& reason, int64_t at_ms) {
+  for (auto& [user_id, participant] : participants_) {
+    (void)user_id;
+    if (participant.stream) {
+      participant.stream->drain();
+      participant.stream->segmenter.recording_changed(reason, at_ms);
+    }
+  }
 }
 
 void AudioPipeline::finish(const std::string& reason, int64_t at_ms) {
