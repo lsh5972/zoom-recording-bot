@@ -23,7 +23,8 @@ CMD ["ctest", "--test-dir", "/build", "--output-on-failure"]
 
 FROM build AS sdk-build
 # Official SDK distribution: h/, libmeetingsdk.so, qt_libs/, and accompanying resources.
-COPY vendor/zoom-sdk/ /opt/zoom-sdk/
+ARG ZOOM_SDK_DIR=vendor/zoom-sdk
+COPY ${ZOOM_SDK_DIR}/ /opt/zoom-sdk/
 RUN test -f /opt/zoom-sdk/libmeetingsdk.so \
     && ln -sf libmeetingsdk.so /opt/zoom-sdk/libmeetingsdk.so.1 \
     && cmake -S /src/worker -B /build -DZOOM_SDK_ROOT=/opt/zoom-sdk \

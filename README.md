@@ -112,8 +112,8 @@ SHA-256은 `sdk.sha256`에 고정했다. 이 체크섬은 두 아키텍처를 �
 현재 `vendor/zoom-sdk/`는 ARM64 배포본이며, x86_64 원본은
 `vendor/zoom-sdk-linux-7.2.1.5860/x86_64/`에 있다.
 SDK를 교체할 때는 이전 디렉터리와 섞지 않고 대상 아키텍처의 배포 디렉터리 전체를 사용한다.
-공식 문서상 7.0부터 ARM64를 지원한다. 로컬 Docker는 Linux ARM64이므로
-ARM64 SDK와 같은 아키텍처의 Ubuntu 이미지를 사용하고, x86 에뮬레이션을 전제로 삼지 않는다.
+공식 문서상 7.0부터 ARM64를 지원한다. Docker platform과 SDK 바이너리의 아키텍처는 일치해야 한다.
+Apple Silicon에서 `linux/amd64` 이미지를 실행하면 Docker의 x86 에뮬레이션을 사용한다.
 
 SDK를 받을 수 없어도 공식 공개 [API 정의](https://marketplacefront.zoom.us/sdk/meeting/linux/files.html)로
 입장·콜백 코드를 컴파일할 수 있다. 로그인 없이 공개 헤더 정의를 가져오는 스크립트를 제공한다.
@@ -131,12 +131,15 @@ docker build --target api-check -t zoom-bot-api-check:local .
 # Apple Silicon의 네이티브 Linux ARM64 worker:
 docker build --platform linux/arm64 --target worker -t zoom-bot-worker:local .
 
-# vendor/zoom-sdk/를 x86_64 배포본 전체로 교체한 뒤 x86_64 worker:
-docker build --platform linux/amd64 --target worker -t zoom-bot-worker:amd64 .
+# 받은 Linux-All 배포본의 x86_64 worker (ARM64 SDK 디렉터리는 그대로 유지):
+docker build --platform linux/amd64 --target worker \
+  --build-arg ZOOM_SDK_DIR=vendor/zoom-sdk-linux-7.2.1.5860/x86_64 \
+  -t zoom-bot-worker:amd64 .
 ```
 
 `--platform`만 바꾸면 SDK 아키텍처가 자동 선택되지 않는다.
-ARM64는 실제 입장·WAV 생성을 검증했으며, x86_64 빌드·실제 입장은 아직 검증하지 않았다.
+`ZOOM_SDK_DIR`은 빌드 context 안의 SDK 배포 디렉터리이며 기본값은 `vendor/zoom-sdk`다.
+ARM64는 실제 입장·WAV 생성을 검증했다. x86_64는 빌드·실제 입장·WAV·공유 화면 JPEG 생성을 검증했다.
 
 Docker는 자격증명·회의 출력 폴더를 빌드 context에서 제외한다. 한 회의의 worker에는
 가상 스피커·무음 마이크를 사용하는 PulseAudio를 함께 시작하며, 추가 권한 컨테이너는 사용하지 않는다.

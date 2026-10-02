@@ -9,6 +9,9 @@
 !vendor/
 !vendor/zoom-sdk/
 !vendor/zoom-sdk/**
+!vendor/zoom-sdk-linux-7.2.1.5860/
+!vendor/zoom-sdk-linux-7.2.1.5860/x86_64/
+!vendor/zoom-sdk-linux-7.2.1.5860/x86_64/**
 !vendor/zoom-api/
 !vendor/zoom-api/h/
 !vendor/zoom-api/h/**
