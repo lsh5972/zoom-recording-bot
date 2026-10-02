@@ -1,0 +1,17 @@
+services:
+  controller:
+    image: zoom-bot-controller:local
+    build:
+      context: .
+      dockerfile: docker/controller.Dockerfile
+    env_file: .env
+    environment:
+      ZOOM_RUNS_DIR: ${ZOOM_HOST_RUNS_DIR:?Run through bin/zoom-bot-docker}
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      - type: bind
+        source: ${ZOOM_HOST_RUNS_DIR}
+        target: ${ZOOM_HOST_RUNS_DIR}
+      - type: bind
+        source: ${ZOOM_DOCKER_SOCKET:?Run through bin/zoom-bot-docker}
+        target: /var/run/docker.sock

@@ -35,8 +35,10 @@ WAV 파일명에는 Zoom 표시 이름과 녹화본별 시간이 들어간다. �
 
 ## 실행 환경과 설정
 
-개발 검증 환경: Ruby 3.2.5. 실행 코드는 표준 라이브러리만 사용한다.
-테스트에는 Minitest가 필요하다. `.ruby-version`을 인식하는 Ruby 환경에서 실행한다.
+실행에는 로컬 Docker와 Docker Compose가 필요하다. 호스트에 Ruby·C++ 컴파일러를 설치할 필요는 없다.
+관리 이미지는 Ruby 3.2.5와 Docker CLI를 포함하고, 회의별 worker는 별도 이미지로 빌드한다.
+Ruby 실행 코드는 표준 라이브러리만 사용한다. 개발자가 호스트에서 직접 실행할 때는
+`.ruby-version`에 맞는 Ruby와 테스트용 Minitest를 사용한다.
 
 서로 다른 두 앱의 자격증명이 필요하다.
 
@@ -62,7 +64,7 @@ Linux SDK의 `SDK_UT_WITHOUT_LOGIN` + `userZAK` 입장과 SDK의 상시 SSO 로�
 [공식 인증 문서](https://developers.zoom.us/docs/meeting-sdk/auth/)
 
 `ZOOM_BOT_DISPLAY_NAME`은 봇의 Zoom 입장 표시 이름이다. 미설정·빈 값은 `Meeting Recorder`를 사용한다.
-예를 들어 `.env`에 `ZOOM_BOT_DISPLAY_NAME='수업 녹음봇'`을 넣고 환경변수를 다시 로드하면
+예를 들어 `.env`에 `ZOOM_BOT_DISPLAY_NAME='수업 녹음봇'`을 넣으면 다음 Docker 명령이 다시 읽고,
 다음 `prepare`·`run`부터 해당 이름을 사용한다.
 
 호스트에게 적용되는 `Record to computer files` 설정에서 `Internal meeting participants`와
@@ -78,23 +80,34 @@ Licensed 사용자라는 사실만으로 녹화 권한이 자동 부여되었다
 cp .env.example .env
 chmod 600 .env
 # 로컬 편집기로 .env의 빈 값을 입력한다.
-set -a
-. ./.env
-set +a
-ruby bin/zoom-bot check
+./bin/zoom-bot-docker build
+./bin/zoom-bot-docker check
 ```
 
 `check`는 필수 값의 존재만 확인한다. 실제 인증 성공을 뜻하지 않는다.
 
 ```sh
-ruby bin/zoom-bot prepare 12345678901
+./bin/zoom-bot-docker prepare 12345678901
 ```
 
 `prepare`는 Zoom API로 회의와 호스트를 조회하고 설정한 봇 사용자의 새 ZAK·JWT를 준비한다.
 회의에 입장하지 않으며, 반환된 토큰을 출력하지 않는다.
-`runs/<session_id>/join.json`에 필요한 단기 인증 정보를 저장한다.
+`runs/<meeting_id>/join.json`에 필요한 단기 인증 정보를 저장한다.
 디렉터리는 `0700`, 파일은 `0600`으로 생성한다. `.env`, `runs/`, `vendor/`는 Git에서 제외한다.
 현재 단기 토큰 파일의 자동 삭제는 없으므로 보존 정책은 후속 구현 대상이다.
+
+`bin/zoom-bot-docker`는 호출할 때마다 짧게 실행되는 Ruby 관리 컨테이너를 만들고,
+명령이 끝나면 삭제한다. `deliver --watch`는 전달을 지켜보는 동안 유지된다.
+회의 worker는 호스트 Docker에서 별도 컨테이너로 실행되어 관리 명령이 끝나도 유지된다.
+관리 이미지에는 SDK 바이너리가 필요 없으며, `run` 전에 아래 worker 빌드는 별도로 필요하다.
+
+스크립트는 현재 Docker context 또는 `DOCKER_HOST`의 로컬 Unix 소켓을 관리 컨테이너에 연결한다.
+Docker Desktop에서는 호스트의 프록시 경로 대신 VM의 `/var/run/docker.sock`을 사용한다.
+원격 TCP/SSH Docker는 지원하지 않는다. 호스트의 `runs/`를 같은 절대 경로로 마운트하므로
+관리 컨테이너에서 생성한 파일 경로를 호스트 Docker가 worker에 그대로 마운트할 수 있다.
+Docker 소켓과 원본 S2S/SDK Secret은 관리 컨테이너에만 제공하며 worker에 전달하지 않는다.
+Compose가 `.env`를 읽으므로 예제의 작은따옴표를 그대로 사용할 수 있고 셸에서 별도 로드할 필요 없다.
+호스트 Ruby CLI도 유지되며, 이때는 기존처럼 환경변수를 로드하고 `ruby bin/zoom-bot ...`을 사용한다.
 
 ## 공식 SDK 배포
 
@@ -158,14 +171,15 @@ Docker는 자격증명·회의 출력 폴더를 빌드 context에서 제외한�
 
 `ZOOM_BOT_IMAGE`는 로컬에 빌드된 worker 이미지 이름이다.
 `run`은 이미지 존재 여부부터 확인한 뒤 새 세션을 준비한다.
-위 빌드 명령을 사용했다면 `ZOOM_BOT_IMAGE='zoom-bot-worker:local'`로 설정한다.
+ARM64 빌드는 `ZOOM_BOT_IMAGE='zoom-bot-worker:local'`, x86_64 빌드는
+`ZOOM_BOT_IMAGE='zoom-bot-worker:amd64'`로 `.env`에 설정한다.
 
 ```sh
-ruby bin/zoom-bot run 12345678901
-ruby bin/zoom-bot stop 12345678901
+./bin/zoom-bot-docker run 12345678901
+./bin/zoom-bot-docker stop 12345678901
 ```
 
-한 번의 `run`으로 컨테이너 하나를 실행한다. 출력 경로는 `runs/<meeting_id>/output/`이다.
+한 번의 `run`으로 회의 worker 하나를 실행한다. 출력 경로는 `runs/<meeting_id>/output/`이다.
 같은 meeting ID 폴더가 이미 있으면 기존 녹음을 보호하기 위해 준비·중복 실행을 거부한다.
 기존 폴더를 자동 삭제하거나 덮어쓰지 않는다. UUID는 내부 session·container·chunk 식별자로 유지한다.
 `stop`·`deliver`는 meeting ID를 받으며, 이전 UUID 폴더도 UUID 인자로 접근할 수 있다.
@@ -174,7 +188,7 @@ ruby bin/zoom-bot stop 12345678901
 - 입력: 읽기 전용 `/run/zoom-bot/join.json`.
 - 출력: `/data` → 호스트의 `runs/<meeting_id>/output/`.
 - 이미지 entrypoint 인자: `--config /run/zoom-bot/join.json --output /data`.
-- S2S/SDK 원본 Secret은 컨테이너에 전달하지 않는다.
+- S2S/SDK 원본 Secret은 worker에 전달하지 않는다.
 - 이미지의 실행 사용자는 마운트된 `0600` 입력과 `0700` 출력에 접근할 수 있어야 한다.
 - `stop`은 SIGTERM 후 최대 30초를 기다린다. worker는 그 안에 청크·이벤트를 마감해야 한다.
 - 컨테이너는 `--rm`으로 실행한다. 회의 종료로 worker가 WAV·이벤트를 마감하고 종료하면 자동 삭제한다.
@@ -207,7 +221,7 @@ Ruby `ChunkDelivery`는 건별 전달·재시도를 담당한다.
 
 `ShareCapture`는 SDK 공유 화면 구독·샘플 간격, `ScreenshotWriter`는 JPEG 변환·저장을 담당한다.
 `ZOOM_SCREENSHOT_INTERVAL_SECONDS='5'`로 지정하면 공유 화면을 5초마다 한 장 저장한다.
-미설정·빈 값의 기본값은 1초이며, 양의 정수만 허용한다. 환경변수를 다시 로드한 뒤 새로
+미설정·빈 값의 기본값은 1초이며, 양의 정수만 허용한다. `.env` 수정 후 새로
 `prepare`/`run`한 회의부터 적용한다. 이미 준비된 회의는 비공개 `join.json`의 간격을 사용한다.
 
 - 참가자 영상은 구독하지 않고 공유 화면만 저장한다. 공유가 없거나 raw 녹화 권한을 잃으면 저장하지 않는다.
@@ -336,13 +350,14 @@ endpoint를 비워 두면 로컬 파일 저장만 사용한다. 수신 API에 �
 HTTPS를 사용하며 로컬 테스트에 한해 loopback HTTP를 허용한다.
 
 ```sh
-ruby bin/zoom-bot deliver 12345678901
-ruby bin/zoom-bot deliver 12345678901 --watch
+./bin/zoom-bot-docker deliver 12345678901
+./bin/zoom-bot-docker deliver 12345678901 --watch
 ```
 
 `deliver`는 현재 준비된 청크를 보내고 종료한다. `--watch`는 250ms 간격으로 새 이벤트를 확인하며
 타임아웃·408·429·5xx에 최대 60초 간격까지 재시도한다. 다른 HTTP 실패는 자동으로 건너뛰지 않는다.
 캡처 프로세스와 별개로 실행하므로 회의가 끝난 후에도 전달을 계속할 수 있다.
+관리 컨테이너에서 `localhost`는 그 컨테이너를 뜻한다. 수신 endpoint는 컨테이너에서 접근 가능한 주소를 사용한다.
 
 POST 형식은 multipart다. `metadata`는 `audio.chunk_ready` 이벤트 전체를 담는 JSON이고,
 `audio`는 화자·시간범위 파일명을 유지한 WAV다. `Idempotency-Key`는 `chunk_id`다.
@@ -353,8 +368,20 @@ POST 형식은 multipart다. `metadata`는 `audio.chunk_ready` 이벤트 전체�
 ## 검증
 
 ```sh
+# Docker 안에서 Ruby 테스트 (관리 이미지 빌드 후):
+docker run --rm --entrypoint ruby \
+  --mount "type=bind,src=$PWD/test,dst=/app/test,readonly" \
+  --mount "type=bind,src=$PWD/bin,dst=/app/bin,readonly" \
+  zoom-bot-controller:local /app/test/run.rb
+
+# 호스트 Ruby 개발 환경이 있는 경우:
 ruby test/run.rb
 ```
+
+관리 이미지 안에서 Ruby 테스트 37개·283 assertions를 통과했다. 실제 Docker 소켓으로
+테스트 worker 생성·정지, 공백 포함 호스트 경로의 파일 저장, 읽기 전용 입력,
+worker의 Docker 소켓 미노출, `--rm` 삭제 후 출력 보존을 검증했다. 이 비교용 worker는 Zoom에 입장하지 않는다.
+관리 컨테이너에서 기존 자격증명으로 실제 S2S 인증·회의 조회·봇 사용자 ZAK 발급도 확인했다.
 
 토큰 서명·갱신, 응답 오류 비노출, 실제 host_id 선택, 잘못된 회의 ID 거부,
 세션 격리·파일 권한, Docker 인자 내 토큰 비노출, 실행 실패 시 파일 보존을 검증한다.

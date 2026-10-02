@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+umask 077
+
+project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+export ZOOM_HOST_RUNS_DIR="$project_root/runs"
+docker_endpoint=${DOCKER_HOST:-}
+if [ -z "$docker_endpoint" ]; then
+  docker_endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
+fi
+case "$docker_endpoint" in
+  unix://*) export ZOOM_DOCKER_SOCKET=${docker_endpoint#unix://} ;;
+  *) echo 'A local Docker Unix socket is required for host recording files.' >&2; exit 1 ;;
+esac
+# Docker Desktop exposes the daemon's VM socket here; its host proxy cannot be bind-mounted.
+if [ "$(docker info --format '{{.OperatingSystem}}')" = 'Docker Desktop' ]; then
+  export ZOOM_DOCKER_SOCKET=/var/run/docker.sock
+fi
+mkdir -p "$ZOOM_HOST_RUNS_DIR"
+
+if [ "${1:-}" = build ]; then
+  shift
+  if [ "$#" -ne 0 ]; then
+    echo 'Usage: bin/zoom-bot-docker build' >&2
+    exit 1
+  fi
+  exec docker compose --project-directory "$project_root" --file "$project_root/compose.yaml" build controller
+fi
+exec docker compose --project-directory "$project_root" --file "$project_root/compose.yaml" run --rm --no-deps -T controller "$@"

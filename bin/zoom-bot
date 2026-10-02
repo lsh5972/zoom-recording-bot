@@ -4,6 +4,7 @@
 require_relative '../lib/zoom_bot'
 
 begin
+  runs_root = ENV.fetch('ZOOM_RUNS_DIR') { File.expand_path('../runs', __dir__) }
   command = ARGV.shift
   case command
   when 'check'
@@ -20,7 +21,7 @@ begin
     tokens = ZoomBot::AccessTokenProvider.new(settings)
     api = ZoomBot::ZoomApiClient.new(tokens)
     signatures = ZoomBot::SdkSignature.new(settings)
-    preparer = ZoomBot::SessionPreparer.new(api, signatures, root: File.expand_path('../runs', __dir__),
+    preparer = ZoomBot::SessionPreparer.new(api, signatures, root: runs_root,
                                           bot_user_email: settings.fetch('ZOOM_BOT_USER_EMAIL'),
                                           display_name: settings.fetch('ZOOM_BOT_DISPLAY_NAME'),
                                           screenshot_interval_seconds: settings.fetch('ZOOM_SCREENSHOT_INTERVAL_SECONDS'))
@@ -35,13 +36,13 @@ begin
     puts "Private files: #{session.fetch(:directory)}"
   when 'stop'
     raise ZoomBot::Error, 'Usage: bin/zoom-bot stop MEETING_ID' unless ARGV.length == 1
-    session = ZoomBot::SessionPreparer.locate(ARGV.first, root: File.expand_path('../runs', __dir__))
+    session = ZoomBot::SessionPreparer.locate(ARGV.first, root: runs_root)
     ZoomBot::BotSupervisor.new(image: 'unused').stop(session.fetch(:session_id))
     puts 'Container stopped. Output files retained.'
   when 'deliver'
     watch = ARGV.delete('--watch')
     raise ZoomBot::Error, 'Usage: bin/zoom-bot deliver MEETING_ID [--watch]' unless ARGV.length == 1
-    session = ZoomBot::SessionPreparer.locate(ARGV.first, root: File.expand_path('../runs', __dir__))
+    session = ZoomBot::SessionPreparer.locate(ARGV.first, root: runs_root)
     client = ZoomBot::ChunkHttpClient.new(endpoint: ENV['ZOOM_CHUNK_ENDPOINT'],
                                          bearer_token: ENV['ZOOM_CHUNK_BEARER_TOKEN'])
     output = File.join(session.fetch(:directory), 'output')
