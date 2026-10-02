@@ -149,6 +149,19 @@ int main() {
       std::ofstream(path) << data;
       require(JoinConfig::read(path).meeting_start_unix_ms == 1700000000123,
               "Native config must preserve the Ruby meeting start timestamp in milliseconds");
+      require(JoinConfig::read(path).screenshot_interval_seconds == 1, "Old join files default to one-second screenshots");
+      data["screenshot_interval_seconds"] = 5;
+      std::ofstream(path) << data;
+      require(JoinConfig::read(path).screenshot_interval_seconds == 5, "Preserve the configured screenshot interval");
+      for (const auto& interval : nlohmann::json::array({0, -1, 1.5, "5", 2147483648LL})) {
+        data["screenshot_interval_seconds"] = interval;
+        std::ofstream(path) << data;
+        try { JoinConfig::read(path); throw std::runtime_error("Invalid interval accepted"); }
+        catch (const std::runtime_error& error) {
+          require(std::string(error.what()) == "Invalid or unreadable join configuration", "Reject invalid intervals without credential leaks");
+        }
+      }
+      data["screenshot_interval_seconds"] = 1;
       data.erase("meeting_start_unix_ms");
       std::ofstream(path) << data;
       try { JoinConfig::read(path); throw std::runtime_error("Missing origin accepted"); }

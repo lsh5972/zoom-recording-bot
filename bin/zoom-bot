@@ -22,7 +22,8 @@ begin
     signatures = ZoomBot::SdkSignature.new(settings)
     preparer = ZoomBot::SessionPreparer.new(api, signatures, root: File.expand_path('../runs', __dir__),
                                           bot_user_email: settings.fetch('ZOOM_BOT_USER_EMAIL'),
-                                          display_name: settings.fetch('ZOOM_BOT_DISPLAY_NAME'))
+                                          display_name: settings.fetch('ZOOM_BOT_DISPLAY_NAME'),
+                                          screenshot_interval_seconds: settings.fetch('ZOOM_SCREENSHOT_INTERVAL_SECONDS'))
     session = preparer.prepare(meeting_id)
     if command == 'run'
       supervisor.start(session)

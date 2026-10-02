@@ -5,6 +5,18 @@ require_relative 'test_helper'
 class AuthTest < Minitest::Test
   include TestFixtures
 
+  def test_screenshot_interval_defaults_and_rejects_invalid_values
+    values = ZoomBot::Settings::KEYS.to_h { |key| [key, settings.fetch(key)] }
+    [nil, '', '  ', '1', ' 5 '].each do |value|
+      configured = ZoomBot::Settings.new(values.merge('ZOOM_SCREENSHOT_INTERVAL_SECONDS' => value))
+      assert_equal(value.to_s.strip == '5' ? 5 : 1, configured.fetch('ZOOM_SCREENSHOT_INTERVAL_SECONDS'))
+    end
+    ['0', '-1', '1.5', 'NaN', 'private-value', '2147483648'].each do |value|
+      error = assert_raises(ZoomBot::Error) { ZoomBot::Settings.new(values.merge('ZOOM_SCREENSHOT_INTERVAL_SECONDS' => value)) }
+      assert_equal 'ZOOM_SCREENSHOT_INTERVAL_SECONDS must be a positive integer', error.message
+    end
+  end
+
   def test_access_token_uses_s2s_credentials_and_refreshes_before_expiry
     time = 1000
     http = FakeHttp.new({ 'access_token' => 'one', 'expires_in' => 3600 },

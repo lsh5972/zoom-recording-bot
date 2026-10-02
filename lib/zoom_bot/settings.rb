@@ -15,6 +15,12 @@ module ZoomBot
       @values = KEYS.to_h { |key| [key, env.fetch(key)] }
       display_name = env['ZOOM_BOT_DISPLAY_NAME'].to_s.strip
       @values['ZOOM_BOT_DISPLAY_NAME'] = display_name.empty? ? 'Meeting Recorder' : display_name
+      interval = env['ZOOM_SCREENSHOT_INTERVAL_SECONDS'].to_s.strip
+      interval = '1' if interval.empty?
+      unless interval.match?(/\A[0-9]+\z/) && interval.to_i.between?(1, 2_147_483_647)
+        raise Error, 'ZOOM_SCREENSHOT_INTERVAL_SECONDS must be a positive integer'
+      end
+      @values['ZOOM_SCREENSHOT_INTERVAL_SECONDS'] = interval.to_i
       @values['ZOOM_BOT_USER_EMAIL'] = @values.fetch('ZOOM_BOT_USER_EMAIL').strip
       unless @values.fetch('ZOOM_BOT_USER_EMAIL').match?(/\A[^\s@]+@[^\s@]+\z/)
         raise Error, 'ZOOM_BOT_USER_EMAIL must be an email address'

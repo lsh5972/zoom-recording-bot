@@ -5,12 +5,13 @@ require_relative 'test_helper'
 class SessionTest < Minitest::Test
   include TestFixtures
 
-  def preparer(root, http)
+  def preparer(root, http, screenshot_interval_seconds: 1)
     tokens = Struct.new(:token).new('access')
     ZoomBot::SessionPreparer.new(ZoomBot::ZoomApiClient.new(tokens, http: http),
                                 ZoomBot::SdkSignature.new(settings), root: root,
                                 bot_user_email: settings.fetch('ZOOM_BOT_USER_EMAIL'),
-                                display_name: settings.fetch('ZOOM_BOT_DISPLAY_NAME'))
+                                display_name: settings.fetch('ZOOM_BOT_DISPLAY_NAME'),
+                                screenshot_interval_seconds: screenshot_interval_seconds)
   end
 
   def test_prepare_uses_bot_email_zak_and_keeps_actual_host_and_secrets_private
@@ -28,6 +29,7 @@ class SessionTest < Minitest::Test
       assert_equal 'secret-zak', join['user_zak']
       assert_equal 'meeting-secret', join['passcode']
       assert_equal 1790848800123, join['meeting_start_unix_ms']
+      assert_equal 1, join['screenshot_interval_seconds']
       assert_equal 0o600, File.stat(path).mode & 0o777
       assert_equal 0o700, File.stat(result[:directory]).mode & 0o777
       assert_equal '/v2/users/recorder%2Bbot%40example.com/token', http.requests.last.first.path
@@ -35,6 +37,18 @@ class SessionTest < Minitest::Test
       refute_includes File.read(path), settings.fetch('ZOOM_S2S_CLIENT_SECRET')
       refute_includes File.read(path), settings.fetch('ZOOM_SDK_CLIENT_SECRET')
       refute_includes result.inspect, 'secret-zak'
+    end
+  end
+
+  def test_screenshot_interval_reaches_private_worker_configuration
+    values = ZoomBot::Settings::KEYS.to_h { |key| [key, settings.fetch(key)] }
+    values['ZOOM_SCREENSHOT_INTERVAL_SECONDS'] = '5'
+    configured = ZoomBot::Settings.new(values)
+    http = FakeHttp.new({ 'id' => 123456789, 'host_id' => 'host', 'start_time' => '2026-10-01T10:00:00Z' },
+                        { 'token' => 'zak' })
+    Dir.mktmpdir do |root|
+      result = preparer(root, http, screenshot_interval_seconds: configured.fetch('ZOOM_SCREENSHOT_INTERVAL_SECONDS')).prepare('123456789')
+      assert_equal 5, JSON.parse(File.read(File.join(result[:directory], 'join.json')))['screenshot_interval_seconds']
     end
   end
 

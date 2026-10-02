@@ -2,12 +2,13 @@
 
 module ZoomBot
   class SessionPreparer
-    def initialize(api, signatures, root:, bot_user_email:, display_name:, clock: -> { Time.now })
+    def initialize(api, signatures, root:, bot_user_email:, display_name:, screenshot_interval_seconds: 1, clock: -> { Time.now })
       @api = api
       @signatures = signatures
       @root = File.expand_path(root)
       @bot_user_email = bot_user_email
       @display_name = display_name
+      @screenshot_interval_seconds = screenshot_interval_seconds
       @clock = clock
     end
 
@@ -36,6 +37,7 @@ module ZoomBot
         schema_version: 1, session_id: session_id, meeting_id: meeting_id, host_user_id: host_id,
         bot_user_email: @bot_user_email, meeting_start_unix_ms: meeting_start_unix_ms,
         passcode: meeting.fetch('password', '').to_s, display_name: @display_name,
+        screenshot_interval_seconds: @screenshot_interval_seconds,
         sdk_jwt: @signatures.issue, user_zak: zak, prepared_at: @clock.call.utc.iso8601
       }
 
