@@ -1,5 +1,6 @@
 #include "zoom_bot/audio_pipeline.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -106,17 +107,25 @@ void AudioPipeline::consume(PcmPacket packet) {
     stream.reset(packet.start_ms);
   }
   stream.received_samples += packet.samples.size() / packet.channels;
-  stream.pending.insert(stream.pending.end(), packet.samples.begin(), packet.samples.end());
   const auto frame_size = static_cast<size_t>(stream.rate / 100 * stream.channels);
-  size_t used = 0;
-  while (stream.pending.size() - used >= frame_size) {
-    std::vector<int16_t> frame(stream.pending.begin() + used, stream.pending.begin() + used + frame_size);
-    const bool voiced = stream.detector.voiced(frame, stream.channels);
-    stream.segmenter.consume({stream.buffer_ms, std::move(frame)}, voiced);
+  const auto consume_frame = [&](const int16_t* samples) {
+    const bool voiced = stream.detector.voiced(samples, frame_size, stream.channels);
+    stream.segmenter.consume({stream.buffer_ms, std::vector<int16_t>(samples, samples + frame_size)}, voiced);
     stream.buffer_ms += 10;
+  };
+  size_t used = 0;
+  if (!stream.pending.empty()) {
+    used = std::min(frame_size - stream.pending.size(), packet.samples.size());
+    stream.pending.insert(stream.pending.end(), packet.samples.begin(), packet.samples.begin() + used);
+    if (stream.pending.size() < frame_size) return;
+    consume_frame(stream.pending.data());
+    stream.pending.clear();
+  }
+  while (packet.samples.size() - used >= frame_size) {
+    consume_frame(packet.samples.data() + used);
     used += frame_size;
   }
-  stream.pending.erase(stream.pending.begin(), stream.pending.begin() + used);
+  stream.pending.assign(packet.samples.begin() + used, packet.samples.end());
 }
 
 void AudioPipeline::advance(int64_t now_ms) {

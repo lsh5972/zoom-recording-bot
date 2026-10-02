@@ -21,15 +21,19 @@ void SpeechDetector::reset() {
 }
 
 bool SpeechDetector::voiced(const std::vector<int16_t>& interleaved, int channels) {
-  if (channels < 1 || channels > 2 || interleaved.size() != static_cast<size_t>(rate_ / 100 * channels))
+  return voiced(interleaved.data(), interleaved.size(), channels);
+}
+
+bool SpeechDetector::voiced(const int16_t* interleaved, size_t samples, int channels) {
+  if (!interleaved || channels < 1 || channels > 2 || samples != static_cast<size_t>(rate_ / 100 * channels))
     throw std::invalid_argument("VAD input must be a 10 ms mono or stereo frame");
-  std::vector<int16_t> mono(interleaved.size() / channels);
-  for (size_t i = 0; i < mono.size(); ++i) {
-    int sum = 0;
-    for (int channel = 0; channel < channels; ++channel) sum += interleaved[i * channels + channel];
-    mono[i] = static_cast<int16_t>(sum / channels);
+  if (channels == 2) {
+    mono_.resize(samples / channels);
+    for (size_t i = 0; i < mono_.size(); ++i)
+      mono_[i] = static_cast<int16_t>((static_cast<int>(interleaved[i * 2]) + interleaved[i * 2 + 1]) / 2);
+    interleaved = mono_.data();
   }
-  const int result = fvad_process(vad_, mono.data(), mono.size());
+  const int result = fvad_process(vad_, interleaved, samples / channels);
   if (result < 0) throw std::runtime_error("VAD rejected frame");
   return result == 1;
 }

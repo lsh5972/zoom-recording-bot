@@ -391,6 +391,7 @@ worker의 Docker 소켓 미노출, `--rm` 삭제 후 출력 보존을 검증했�
 Zoom HTTP와 Docker는 테스트 대역을 사용하고, WAV multipart 전송은 임시 loopback 서버로 검증한다.
 C++ 테스트는 동시 화자 분리, 30초 경계, 발화 이벤트, pre-roll·overlap, 실제 VAD,
 재입장, 미수신 마감, 부분 프레임, 시간범위 파일명을 검증한다. 추가로 늦은 입장의 첫 원점,
+mono·stereo 버퍼 재사용 시 VAD 결정과 서로 다른 콜백 패킷 크기의 WAV PCM·발화 이벤트 일치,
 두 번째 녹화본 10초, 중복 START, 경계의 PCM 분할·보존, pause 시간 제외,
 한글·동명이인·이름 변경·파일명 안전성, unrecorded GMT+9 자정 통과와 건별 전달을 검증한다.
 추가 검증: S2S만으로 ZAK 발급, SDK 인증 실패 시 입장 차단, 역할·녹음 권한 확인,

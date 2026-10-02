@@ -184,6 +184,62 @@ void silence_and_invalid_vad_input() {
   check(rejected, "Malformed VAD frame must be rejected");
 }
 
+void vad_channel_changes_preserve_voice_decisions() {
+  SF_INFO info{};
+  const auto source = read_wav(FVAD_FIXTURE, info);
+  SpeechDetector mono(16000), alternating(16000);
+  for (size_t offset = 0; offset + 160 <= source.size(); offset += 160) {
+    std::vector<int16_t> stereo;
+    for (size_t i = 0; i < 160; ++i) {
+      stereo.push_back(source[offset + i]);
+      stereo.push_back(source[offset + i]);
+    }
+    const bool expected = mono.voiced(source.data() + offset, 160, 1);
+    const bool actual = offset / 160 % 2 ? alternating.voiced(stereo, 2) :
+                                         alternating.voiced(source.data() + offset, 160, 1);
+    check(actual == expected, "Mono and reused stereo buffers must preserve the same VAD history");
+  }
+}
+
+void callback_packet_sizes_preserve_wav_and_speech_events() {
+  SF_INFO info{};
+  auto source = read_wav(FVAD_FIXTURE, info);
+  source.resize(std::min(source.size(), static_cast<size_t>(16000 * 3)));
+  source.insert(source.end(), 16000 / 2 + 37, 0);
+  for (int channels : {1, 2}) {
+    std::vector<int16_t> input;
+    for (auto sample : source) for (int channel = 0; channel < channels; ++channel) input.push_back(sample);
+    const auto render = [&](const std::vector<size_t>& packet_frames) {
+      Output output;
+      EventJournal journal(output.root, "session");
+      WavWriter wav(output.root);
+      AudioPipeline pipeline(journal, wav, output.recordings);
+      pipeline.joined(42, "홍길동", 0);
+      size_t offset = 0, packet = 0;
+      while (offset < input.size()) {
+        const auto count = std::min(packet_frames[packet++ % packet_frames.size()] * channels, input.size() - offset);
+        pipeline.consume({42, 16000, channels, static_cast<int64_t>(offset / channels * 1000 / 16000),
+                          std::vector<int16_t>(input.begin() + offset, input.begin() + offset + count)});
+        offset += count;
+      }
+      pipeline.finish("stop", static_cast<int64_t>(source.size() * 1000 / 16000));
+      auto events = output.events();
+      std::vector<std::vector<int16_t>> chunks;
+      for (auto& event : events) {
+        event.erase("recorded_at_unix_ms");
+        if (event["type"] == "audio.chunk_ready") {
+          SF_INFO chunk_info{};
+          chunks.push_back(read_wav(output.root / event["data"]["wav_path"].get<std::string>(), chunk_info));
+        }
+      }
+      check(!chunks.empty(), "Packet comparison must exercise real voiced WAV chunks");
+      return std::make_pair(events, chunks);
+    };
+    check(render({160}) == render({1, 79, 241, 400, 17}),
+          "Partial, aligned and multi-frame callbacks must produce identical WAV PCM and speech events");
+  }
+}
+
 void overlapping_speakers_keep_distinct_audio() {
   Output output;
   EventJournal journal(output.root, "session");
@@ -409,6 +465,8 @@ int main() {
     {"partial PCM frame", final_partial_frame_preserves_pcm},
     {"format change counters", counters_survive_audio_format_change},
     {"silence and invalid VAD input", silence_and_invalid_vad_input},
+    {"VAD mono/stereo buffer reuse", vad_channel_changes_preserve_voice_decisions},
+    {"callback packet size equivalence", callback_packet_sizes_preserve_wav_and_speech_events},
     {"overlapping speakers", overlapping_speakers_keep_distinct_audio},
     {"participant timestamp filenames", timestamp_filename_uses_shared_clock_and_sequence},
     {"real VAD framing, rejoin and inactivity", real_vad_framing_rejoin_and_inactivity},

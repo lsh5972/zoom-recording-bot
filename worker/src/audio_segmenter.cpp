@@ -45,7 +45,7 @@ nlohmann::json AudioSegmenter::recording_identity(int64_t capture_ms) const {
 void AudioSegmenter::consume(AudioFrame frame, bool voiced) {
   if (frame.samples.empty() || frame.samples.size() > static_cast<size_t>(rate_ / 100 * channels_) ||
       frame.samples.size() % channels_ != 0 ||
-      (!pre_roll_.empty() && frame.start_ms != end_ms_))
+      ((speaking_ || !pre_roll_.empty()) && frame.start_ms != end_ms_))
     throw std::invalid_argument("Segmenter requires consecutive frames of at most 10 ms");
   const auto duration_ms = (frame.samples.size() / channels_ * 1000 + rate_ - 1) / rate_;
   end_ms_ = frame.start_ms + static_cast<int64_t>(duration_ms);
@@ -56,6 +56,7 @@ void AudioSegmenter::consume(AudioFrame frame, bool voiced) {
       next_cut_ms_ = frame.start_ms + 30000;
       utterance_id_ = participant_id_ + "-utterance-" + std::to_string(++utterance_number_);
       chunk_.assign(pre_roll_.begin(), pre_roll_.end());
+      pre_roll_.clear();
       auto event = identity();
       event.update(recording_identity(frame.start_ms));
       event["speech_start_ms"] = event["recording_time_ms"];
@@ -66,15 +67,19 @@ void AudioSegmenter::consume(AudioFrame frame, bool voiced) {
     }
   }
   if (speaking_) {
-    chunk_.push_back(frame);
     if (!voiced && end_ms_ - last_voice_end_ms_ >= 400) {
+      chunk_.push_back(frame);  // Keep the closing frame for the next utterance's pre-roll.
       finish("silence");
-    } else if (voiced && end_ms_ >= next_cut_ms_) {
-      std::vector<AudioFrame> overlap(chunk_.end() - 20, chunk_.end());
-      publish("max_duration");
-      chunk_ = std::move(overlap);
-      overlap_ms_ = 200;
-      next_cut_ms_ += 30000;
+    } else {
+      chunk_.push_back(std::move(frame));
+      if (voiced && end_ms_ >= next_cut_ms_) {
+        std::vector<AudioFrame> overlap(chunk_.end() - 20, chunk_.end());
+        publish("max_duration");
+        chunk_ = std::move(overlap);
+        overlap_ms_ = 200;
+        next_cut_ms_ += 30000;
+      }
+      return;
     }
   }
   pre_roll_.push_back(std::move(frame));
@@ -125,6 +130,7 @@ void AudioSegmenter::publish(const std::string& reason, int64_t limit_ms) {
     const auto end = std::min({end_ms_, span.end_ms, limit_ms});
     if (start >= end) continue;
     std::vector<int16_t> samples;
+    samples.reserve(static_cast<size_t>((end - start) * rate_ / 1000 * channels_));
     for (const auto& frame : chunk_) {
       const auto frames = static_cast<int64_t>(frame.samples.size() / channels_);
       const auto first = std::clamp((start - frame.start_ms) * rate_ / 1000, int64_t{0}, frames);
