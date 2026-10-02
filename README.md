@@ -157,6 +157,7 @@ docker build --platform linux/amd64 --target worker \
 
 `--platform`만 바꾸면 SDK 아키텍처가 자동 선택되지 않는다.
 `ZOOM_SDK_DIR`은 빌드 context 안의 SDK 배포 디렉터리이며 기본값은 `vendor/zoom-sdk`다.
+운영 worker와 API 검증 이미지는 Release로 빌드해 C++ 처리 코드와 VAD에 컴파일러 최적화를 적용한다.
 ARM64는 실제 입장·WAV 생성을 검증했다. x86_64는 빌드·실제 입장·WAV·공유 화면 JPEG 생성을 검증했다.
 
 Docker는 자격증명·회의 출력 폴더를 빌드 context에서 제외한다. 한 회의의 worker에는

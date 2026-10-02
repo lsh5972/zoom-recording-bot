@@ -17,7 +17,7 @@ COPY scripts/ /src/scripts/
 # Builds the real adapter against public API definitions, linked to test doubles only.
 FROM build AS api-check
 COPY vendor/zoom-api/h/ /opt/zoom-api/h/
-RUN cmake -S /src/worker -B /build -DZOOM_API_HEADERS=/opt/zoom-api/h \
+RUN cmake -S /src/worker -B /build -DCMAKE_BUILD_TYPE=Release -DZOOM_API_HEADERS=/opt/zoom-api/h \
     && cmake --build /build -j 4 && ctest --test-dir /build --output-on-failure
 CMD ["ctest", "--test-dir", "/build", "--output-on-failure"]
 
@@ -27,7 +27,7 @@ ARG ZOOM_SDK_DIR=vendor/zoom-sdk
 COPY ${ZOOM_SDK_DIR}/ /opt/zoom-sdk/
 RUN test -f /opt/zoom-sdk/libmeetingsdk.so \
     && ln -sf libmeetingsdk.so /opt/zoom-sdk/libmeetingsdk.so.1 \
-    && cmake -S /src/worker -B /build -DZOOM_SDK_ROOT=/opt/zoom-sdk \
+    && cmake -S /src/worker -B /build -DCMAKE_BUILD_TYPE=Release -DZOOM_SDK_ROOT=/opt/zoom-sdk \
     && cmake --build /build -j 4 && ctest --test-dir /build --output-on-failure
 
 FROM runtime AS worker
