@@ -1,4 +1,7 @@
 #include "zoom_bot/zoom_session.hpp"
+#ifdef ZOOM_SHARE_INIT_RETRY
+#include "zoom_bot/share_init_retry.hpp"
+#endif
 
 #include <stdexcept>
 
@@ -179,6 +182,9 @@ void ZoomSession::start() {
 #ifdef ZOOM_SHARE_DIAGNOSTICS
   capture_.event("sdk.diagnostics.enabled", {{"interval_seconds", 1}, {"sdk_logging", true}});
 #endif
+#ifdef ZOOM_SHARE_INIT_RETRY
+  capture_.event("sdk.share_init_retry.enabled", {{"delay_after_capture_seconds", 2}, {"maximum_attempts", 1}});
+#endif
   capture_.event("sdk.callback_inventory", sdk_callback_inventory());
   const auto network_result = CreateNetworkConnectionHelper(&network_);
   if (network_result == SDKERR_SUCCESS && network_)
@@ -190,6 +196,9 @@ void ZoomSession::start() {
   check(CreateMeetingService(&meeting_), "create_meeting");
   check(CreateSettingService(&settings_), "create_settings");
   if (!auth_ || !meeting_ || !settings_) throw std::runtime_error("SDK did not create services");
+#ifdef ZOOM_SHARE_INIT_RETRY
+  capture_.event("sdk.share_init_retry.hook", {{"captured", zoom_bot_share_init_captured(meeting_)}});
+#endif
   check(auth_->SetEvent(&auth_events_), "register_auth_events");
   check(meeting_->SetEvent(&meeting_events_), "register_meeting_events");
   AuthContext context;
@@ -367,6 +376,9 @@ void ZoomSession::try_recording() {
   const auto subscribed = raw_->subscribe(this, false);
   if (subscribed != SDKERR_SUCCESS) { receiving_ = false; check(subscribed, "subscribe_one_way_audio"); }
   subscribed_ = true;
+#ifdef ZOOM_SHARE_INIT_RETRY
+  share_init_retry_at_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+#endif
   share_.refresh(meeting_->GetMeetingShareController());
   capture_.event("sdk.event_coverage", {{"interface", "IZoomSDKAudioRawDataDelegate"}, {"registered", true},
                                        {"callbacks", {"onMixedAudioRawDataReceived", "onOneWayAudioRawDataReceived",
@@ -437,6 +449,15 @@ void ZoomSession::tick() {
     if (in_meeting_ && !done_ && now >= next_share_diagnostics_) {
       diagnose_share();
       next_share_diagnostics_ = now + std::chrono::seconds(1);
+    }
+#endif
+#ifdef ZOOM_SHARE_INIT_RETRY
+    if (in_meeting_ && !done_ && subscribed_ && receiving_ && !share_init_retried_ && now >= share_init_retry_at_) {
+      share_init_retried_ = true;
+      const auto retry = zoom_bot_retry_share_init(meeting_);
+      capture_.event("sdk.share_init_retry.result", {{"captured", retry.captured}, {"invoked", retry.invoked},
+          {"registered_before", retry.registered_before}, {"registered_after", retry.registered_after}});
+      share_.refresh(meeting_->GetMeetingShareController());
     }
 #endif
     if (subscribed_ && receiving_) share_.tick(capture_.now_ms());

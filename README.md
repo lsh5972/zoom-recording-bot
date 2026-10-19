@@ -204,7 +204,35 @@ ZOOM_BOT_IMAGE=zoom-bot-worker-arm64:diagnostic ./bin/zoom-bot-docker run 123456
 진단 이미지의 SDK 로깅·추가 조회 비용은 운영 성능 측정에 포함하지 않는다.
 ARM64 실제 SDK 링크와 이미지 내부 CTest 6개를 통과했다. 네트워크를 차단하고 가짜 토큰으로 실행해
 SDK 초기화 성공, 인증 거부 후 미입장 종료, 컨테이너 삭제 후 SDK 로그 파일 보존을 확인했다.
-실제 회의에서 공유 이벤트·수신 통계·JPEG를 얻는지는 아직 검증하지 않았다.
+실제 ARM64 회의 95274437964에서는 WAV 4개를 생성했지만, 약 5분 동안 공유 콜백·소스·raw 화면 프레임은
+모두 0이었다. 통계 API는 성공을 반환하면서 음수 FPS와 비정상 해상도를 제공해 수신 여부 판단에서 제외했다.
+
+### ARM64 내부 공유 초기화 재시도 실험
+
+`share-retry` target은 읽기 전용 진단 이미지에 내부 공유 초기화 재호출을 추가한다.
+SDK 내부에서 공유 delegate 등록을 건너뛰어도 전체 등록 완료로 표시하는 경로를 겨냥한 실험이며,
+실제 원인이 이 경로인지는 확인되지 않았다. JPG 생성이 검증된 수정본으로 간주하지 않는다.
+
+```sh
+docker build --platform linux/arm64 --target share-retry --build-arg ZOOM_SDK_DIR=vendor/zoom-sdk -t zoom-bot-worker-arm64:share-retry .
+ZOOM_BOT_IMAGE=zoom-bot-worker-arm64:share-retry ./bin/zoom-bot-docker run 12345678901
+```
+
+별도 태그이므로 기존 ARM64·amd64·진단 이미지를 덮어쓰지 않는다. `.env`와 Ruby 관리 이미지 수정은 없다.
+기존 출력이 없는 테스트 회의 ID를 사용한다. 실행 중인 다른 봇을 교체하거나 회의 설정을 변경하지 않는다.
+
+- SDK 바이너리는 수정하지 않는다. 워커 프로세스에만 `LD_PRELOAD`로 작은 공유 라이브러리를 먼저 로딩해 내부
+  `CoreShareEventSink::Init/Uninit` 호출의 실제 객체와 원래 함수를 보관한다.
+- 같은 회의에서 녹음 권한을 확보하고 raw 캡처를 시작한 뒤 2초 후, SDK 메인 스레드에서
+  메인 회의의 원래 공유 초기화 함수만 한 번 재호출한다. 미입장·권한 대기·녹음 중지·종료 상태에서는 호출하지 않는다.
+- `sdk.share_init_retry.hook.captured`는 서비스 생성 시 내부 호출을 잡았는지 표시한다.
+  인증 전에는 `false`일 수 있으므로 실제 재시도 시점의 `result.captured`도 확인한다.
+  `sdk.share_init_retry.result`의 `invoked`는 재호출 실행 여부, `registered_before/after`는 내부 delegate 등록 플래그다.
+  등록 성공만으로 화면 수신 성공을 의미하지 않는다. `sdk.diagnostics.share`의 소스·프레임 수와 실제 JPG를 확인한다.
+- 객체가 해제되면 보관한 참조를 지운다. 다른 회의나 breakout delegate는 재호출하지 않는다.
+  비공개 ABI와 등록 플래그 오프셋 `0x15`에 의존하므로, 현재 ARM64 7.2.1.5860의
+  `libmeetingsdk.so` SHA256 `54767fee56613c8a6d7c5e0206f3a0cebe8766984388781f97b91d6cd2b6d549`만 허용한다.
+  다른 SDK·아키텍처에서는 실험 빌드가 실패한다. 일반 `worker`와 `diagnostics` target에서는 이 우회가 꺼져 있다.
 
 Docker는 자격증명·회의 출력 폴더를 빌드 context에서 제외한다. 한 회의의 worker에는
 가상 스피커·무음 마이크를 사용하는 PulseAudio를 함께 시작하며, 추가 권한 컨테이너는 사용하지 않는다.
