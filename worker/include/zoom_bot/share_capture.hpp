@@ -10,7 +10,7 @@ class ShareCapture final : public ZOOMSDK::IZoomSDKRendererDelegate {
  public:
   ShareCapture(CaptureRuntime& capture, int interval_seconds);
   ~ShareCapture();
-  void refresh(ZOOMSDK::IMeetingShareController* controller, ZOOMSDK::IMeetingParticipantsController* participants);
+  void refresh(ZOOMSDK::IMeetingShareController* controller);
   void changed(uint32_t user_id, uint32_t source_id, ZOOMSDK::SharingStatus status, ZOOMSDK::ShareType type);
   void suspend();  // Immediately reject SDK frames; cleanup stays on the SDK main thread.
   void stop();
