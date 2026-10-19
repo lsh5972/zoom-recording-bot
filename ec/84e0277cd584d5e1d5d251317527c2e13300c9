@@ -1,0 +1,48 @@
+docker/share-retry-worker.sh
+  s_94b8728166fbc7::t_29d673e63f78bf 1-6
+worker/src/share_init_retry.cpp
+  s_94b8728166fbc7::t_0103c6491c46c3 1-67
+  s_94b8728166fbc7::t_87fbbf75a563ec 68-72
+worker/src/zoom_session.cpp
+  s_94b8728166fbc7::t_0103c6491c46c3 2-4,184-186,379-381,453-460
+  s_94b8728166fbc7::t_87fbbf75a563ec 199-201
+  s_94b8728166fbc7::t_50f453dff38b0a 461
+worker/CMakeLists.txt
+  s_94b8728166fbc7::t_0103c6491c46c3 57-72,74,76,99-102,133-135
+  s_94b8728166fbc7::t_29d673e63f78bf 73,75
+Dockerfile
+  s_94b8728166fbc7::t_0103c6491c46c3 44-50,53-54,57-60
+  s_94b8728166fbc7::t_29d673e63f78bf 51-52,55-56
+worker/tests/share_retry_tests.cpp
+  s_94b8728166fbc7::t_87fbbf75a563ec 18-19,34
+  s_94b8728166fbc7::t_0103c6491c46c3 1-17,20-33,35-42
+worker/tests/share_retry_fixture.cpp
+  s_94b8728166fbc7::t_0103c6491c46c3 1-22
+worker/include/zoom_bot/zoom_session.hpp
+  s_94b8728166fbc7::t_0103c6491c46c3 45-48
+worker/tests/sdk_tests.cpp
+  s_94b8728166fbc7::t_87fbbf75a563ec 227
+  s_94b8728166fbc7::t_7e185d4255c389 3-6,213-217,220-226,228-229,824-827,832-858,874-877,879
+README.md
+  s_94b8728166fbc7::t_8d49399935a21d 207-223,225-228,230-235
+  s_94b8728166fbc7::t_29d673e63f78bf 224,229
+worker/include/zoom_bot/share_init_retry.hpp
+  s_94b8728166fbc7::t_87fbbf75a563ec 12
+  s_94b8728166fbc7::t_0103c6491c46c3 1-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ec84e0277cd584d5e1d5d251317527c2e13300c9",
+  "prompts": {},
+  "sessions": {
+    "s_94b8728166fbc7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0f0d4-b78d-73d3-ad32-f8b29da885c8",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Soohyeon Lee <soohyeon.lee@privatenote.co.kr>"
+    }
+  }
+}
