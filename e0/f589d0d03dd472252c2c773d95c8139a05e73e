@@ -1,0 +1,21 @@
+README.md
+  s_94b8728166fbc7::t_578dc374d0e5cf 207,210-220
+worker/tests/sdk_tests.cpp
+  s_94b8728166fbc7::t_bb245f2fb9fcae 209
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e0f589d0d03dd472252c2c773d95c8139a05e73e",
+  "prompts": {},
+  "sessions": {
+    "s_94b8728166fbc7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0f0d4-b78d-73d3-ad32-f8b29da885c8",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Soohyeon Lee <soohyeon.lee@privatenote.co.kr>"
+    }
+  }
+}
