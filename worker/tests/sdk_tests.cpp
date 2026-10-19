@@ -1,9 +1,5 @@
 #include "zoom_bot/zoom_session.hpp"
 #include "sdk_stubs.hpp"
-#ifdef ZOOM_SHARE_INIT_RETRY
-#include "zoom_bot/share_init_retry.hpp"
-#include <thread>
-#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -210,22 +206,8 @@ struct Meeting : IMeetingServiceStub {
   IMeetingReminderController* GetMeetingReminderController() override { return &reminder; }
   IMeetingShareController* GetMeetingShareController() override { return share_available ? &share : nullptr; }
 };
-struct Backend { Auth auth; Meeting meeting; Settings settings; Raw raw; Renderer renderer; int cleanup = 0, renderers = 0; bool sdk_logging = false;
-#ifdef ZOOM_SHARE_INIT_RETRY
-  int share_init_retries = 0;
-#endif
-};
+struct Backend { Auth auth; Meeting meeting; Settings settings; Raw raw; Renderer renderer; int cleanup = 0, renderers = 0; bool sdk_logging = false; };
 Backend* backend;
-
-#ifdef ZOOM_SHARE_INIT_RETRY
-extern "C" ShareInitRetryResult zoom_bot_retry_share_init(void* meeting) {
-  require(meeting == &backend->meeting && backend->raw.delegate && backend->meeting.recording.starts > 0,
-          "Internal share initialization must wait for this meeting's approved raw capture");
-  ++backend->share_init_retries;
-  return {true, true, false, true};
-}
-extern "C" bool zoom_bot_share_init_captured(void* meeting) { return meeting == &backend->meeting; }
-#endif
 
 namespace ZOOMSDK {
 extern "C" {
@@ -822,39 +804,8 @@ void share_diagnostics_are_read_only_and_report_missing_data() {
     require(sdk.meeting.statistics_calls == 0 && records.empty() && output.events("sdk.diagnostics.enabled").empty(),
             "A normal build must not poll diagnostic APIs or emit diagnostic events");
 #endif
-#ifndef ZOOM_SHARE_INIT_RETRY
-    require(output.events("sdk.share_init_retry.enabled").empty() && output.events("sdk.share_init_retry.result").empty(),
-            "Normal and read-only diagnostic builds must never invoke private SDK initialization");
-#endif
   }
 }
-
-#ifdef ZOOM_SHARE_INIT_RETRY
-void share_initialization_retries_once_after_approved_capture() {
-  Backend sdk; backend = &sdk; Output output;
-  sdk.meeting.recording.permission = SDKERR_NO_PERMISSION;
-  CaptureRuntime capture(output.root, "session");
-  {
-    ZoomSession session(config(), capture);
-    admit(session, sdk);
-    std::this_thread::sleep_for(std::chrono::milliseconds(2100)); session.tick();
-    require(sdk.share_init_retries == 0, "Admission without recording permission must never trigger the retry");
-    sdk.meeting.recording.permission = SDKERR_SUCCESS;
-    sdk.meeting.recording.listener->onRecordPrivilegeChanged(true); session.tick();
-    require(sdk.raw.subscriptions == 1 && sdk.share_init_retries == 0, "Wait two seconds after capture starts");
-    std::this_thread::sleep_for(std::chrono::milliseconds(2100)); session.tick();
-    for (int i = 0; i < 10; ++i) session.tick();
-    require(sdk.share_init_retries == 1 && !session.done(), "Retry once without stopping audio or rejoining");
-    session.stop("test_stop"); session.tick();
-    require(sdk.share_init_retries == 1, "Never retry a stopped meeting");
-  }
-  capture.close();
-  const auto records = output.events("sdk.share_init_retry.result");
-  require(!capture.failed() && records.size() == 1 && records.front()["data"]["invoked"] == true &&
-          records.front()["data"]["registered_before"] == false && records.front()["data"]["registered_after"] == true,
-          "Persist the actual registration transition without losing capture");
-}
-#endif
 
 int main() {
   try {
@@ -871,12 +822,7 @@ int main() {
     share_permission_reconnect_and_switching();
     share_snapshots_preserve_pixels_and_every_frame_event();
     share_diagnostics_are_read_only_and_report_missing_data();
-#ifdef ZOOM_SHARE_INIT_RETRY
-    share_initialization_retries_once_after_approved_capture();
-    std::cout << "27 SDK adapter scenarios passed (test doubles, no live meeting)\n";
-#else
     std::cout << "26 SDK adapter scenarios passed (test doubles, no live meeting)\n";
-#endif
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

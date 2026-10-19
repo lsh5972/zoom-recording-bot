@@ -42,10 +42,6 @@ class ZoomSession final : public SdkEventSink, public IZoomSDKAudioRawDataDelega
   std::chrono::steady_clock::time_point next_share_diagnostics_{};
   std::atomic<uint64_t> diagnostic_audio_packets_{0};
 #endif
-#ifdef ZOOM_SHARE_INIT_RETRY
-  bool share_init_retried_ = false;
-  std::chrono::steady_clock::time_point share_init_retry_at_{};
-#endif
 
   JoinConfig config_;
   CaptureRuntime& capture_;
