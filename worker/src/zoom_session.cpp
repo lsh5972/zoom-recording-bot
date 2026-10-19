@@ -168,11 +168,17 @@ void ZoomSession::start() {
   init.strWebDomain = "https://zoom.us";
   init.emLanguageID = LANGUAGE_English;
   init.enableLogByDefault = false;
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+  init.enableLogByDefault = true;
+#endif
   init.enableGenerateDump = false;
   init.rawdataOpts.audioRawdataMemoryMode = ZoomSDKRawDataMemoryModeStack;
   check(InitSDK(init), "initialize");
   initialized_ = true;
   capture_.event("sdk.initialized", {{"version", sdk_value(GetSDKVersion())}, {"meeting_id", config_.meeting_id}});
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+  capture_.event("sdk.diagnostics.enabled", {{"interval_seconds", 1}, {"sdk_logging", true}});
+#endif
   capture_.event("sdk.callback_inventory", sdk_callback_inventory());
   const auto network_result = CreateNetworkConnectionHelper(&network_);
   if (network_result == SDKERR_SUCCESS && network_)
@@ -393,6 +399,10 @@ void ZoomSession::error(const char* reason) {
 void ZoomSession::stop(const std::string& reason) {
   if (done_) return;
   done_ = true;
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+  capture_.event("sdk.diagnostics.stopped", {{"audio_packets", diagnostic_audio_packets_.load()},
+                                            {"share", share_.diagnostics()}});
+#endif
   pause_recording(reason);
   if (meeting_ && join_requested_ && reason != "meeting_ended")
     capture_.event("sdk.operation", {{"operation", "leave_meeting"}, {"result", sdk_value(meeting_->Leave(LEAVE_MEETING))}});
@@ -423,10 +433,51 @@ void ZoomSession::tick() {
       if (in_meeting_) try_recording();
       next_permission_check_ = now + std::chrono::seconds(1);
     }
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+    if (in_meeting_ && !done_ && now >= next_share_diagnostics_) {
+      diagnose_share();
+      next_share_diagnostics_ = now + std::chrono::seconds(1);
+    }
+#endif
     if (subscribed_ && receiving_) share_.tick(capture_.now_ms());
     if (!subscribed_ && now >= deadline_) error("admission_or_recording_permission_timeout");
   } catch (...) { error("sdk_operation_failed"); }
 }
+
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+void ZoomSession::diagnose_share() {
+  MeetingASVStatisticInfo stats;
+  const auto result = meeting_->GetMeetingShareStatisticInfo(stats);
+  auto received = nlohmann::json(nullptr);
+  if (result == SDKERR_SUCCESS) {
+    const auto resolution = static_cast<uint32_t>(stats.recvResolution);
+    received = {{"bandwidth", stats.recvBandwidth}, {"fps", stats.recvFps},
+                {"width", resolution & 0xffff}, {"height", resolution >> 16}};
+  }
+  auto sources = nlohmann::json::array();
+  auto* controller = meeting_->GetMeetingShareController();
+  auto* sharers = controller ? controller->GetViewableSharingUserList() : nullptr;
+  if (sharers) for (int i = 0; i < sharers->GetCount(); ++i) {
+    const auto user = sharers->GetItem(i);
+    auto* list = controller->GetSharingSourceInfoList(user);
+    auto entries = nlohmann::json(nullptr);
+    if (list) {
+      entries = nlohmann::json::array();
+      for (int j = 0; j < list->GetCount(); ++j) {
+        const auto info = list->GetItem(j);
+        entries.push_back({{"source_id", info.shareSourceID}, {"status", static_cast<int>(info.status)},
+                           {"content_type", static_cast<int>(info.contentType)}});
+      }
+    }
+    sources.push_back({{"user_id", user}, {"sources", std::move(entries)}});
+  }
+  capture_.event("sdk.diagnostics.share", {{"statistics_result", static_cast<int>(result)},
+      {"received", std::move(received)}, {"connection_quality", static_cast<int>(meeting_->GetSharingConnQuality(false))},
+      {"share_controller_available", controller != nullptr}, {"sharer_list_available", sharers != nullptr},
+      {"sources", std::move(sources)}, {"raw_recording_started", recording_started_}, {"audio_subscribed", subscribed_},
+      {"audio_packets", diagnostic_audio_packets_.load()}, {"share", share_.diagnostics()}});
+}
+#endif
 
 void ZoomSession::raw_event(const char* kind, AudioRawData* data, nlohmann::json fields) {
   if (data) {
@@ -452,6 +503,9 @@ void ZoomSession::onOneWayAudioRawDataReceived(AudioRawData* data, uint32_t user
     if (!receiving_) return;
     if (!data || !data->GetBuffer() || data->GetBufferLen() == 0 || data->GetBufferLen() % sizeof(int16_t) != 0)
       throw std::runtime_error("Invalid SDK PCM buffer");
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+    ++diagnostic_audio_packets_;
+#endif
     PcmPacket packet{user_id, static_cast<int>(data->GetSampleRate()), static_cast<int>(data->GetChannelNum()), 0, {}};
     packet.samples.resize(data->GetBufferLen() / sizeof(int16_t));
     std::memcpy(packet.samples.data(), data->GetBuffer(), data->GetBufferLen());

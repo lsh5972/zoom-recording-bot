@@ -19,6 +19,9 @@ class ShareCapture final : public ZOOMSDK::IZoomSDKRendererDelegate {
   void onRawDataFrameReceived(YUVRawDataI420* data) override;
   void onRawDataStatusChanged(RawDataStatus status) override;
   void onShareCursorDataReceived(ZoomSDKShareCursorData info) override;
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+  nlohmann::json diagnostics();
+#endif
 
  private:
   void select(uint32_t user_id, uint32_t source_id);
@@ -33,5 +36,8 @@ class ShareCapture final : public ZOOMSDK::IZoomSDKRendererDelegate {
   std::optional<ScreenshotFrame> latest_;
   std::shared_ptr<std::vector<unsigned char>> pixels_;
   nlohmann::json previous_sources_;
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+  uint64_t frame_callbacks_ = 0;
+#endif
 };
 }  // namespace zoom_bot

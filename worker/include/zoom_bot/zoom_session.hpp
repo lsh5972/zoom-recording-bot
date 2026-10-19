@@ -37,6 +37,11 @@ class ZoomSession final : public SdkEventSink, public IZoomSDKAudioRawDataDelega
   void pause_recording(const std::string& reason);
   void error(const char* reason);
   void raw_event(const char* kind, AudioRawData* data, nlohmann::json fields);
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+  void diagnose_share();
+  std::chrono::steady_clock::time_point next_share_diagnostics_{};
+  std::atomic<uint64_t> diagnostic_audio_packets_{0};
+#endif
 
   JoinConfig config_;
   CaptureRuntime& capture_;

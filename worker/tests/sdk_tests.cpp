@@ -123,8 +123,9 @@ struct ShareController : IMeetingShareControllerStub {
   IMeetingShareCtrlEvent* listener = nullptr;
   List<uint32_t> users;
   List<ZoomSDKSharingSourceInfo> sources;
+  bool list_available = true;
   SDKError SetEvent(IMeetingShareCtrlEvent* value) override { listener = value; return SDKERR_SUCCESS; }
-  IList<uint32_t>* GetViewableSharingUserList() override { return &users; }
+  IList<uint32_t>* GetViewableSharingUserList() override { return list_available ? &users : nullptr; }
   IList<ZoomSDKSharingSourceInfo>* GetSharingSourceInfoList(unsigned int) override { return &sources; }
   ZoomSDKSharingSourceInfo begin(uint32_t user = 42, uint32_t source = 900) {
     ZoomSDKSharingSourceInfo info;
@@ -173,11 +174,22 @@ struct Meeting : IMeetingServiceStub {
   ShareController share;
   int joins = 0, starts = 0, leaves = 0;
   MeetingStatus reported_status = MEETING_STATUS_CONNECTING;
+  int statistics_calls = 0;
+  SDKError statistics_result = SDKERR_SUCCESS;
+  bool share_available = true;
+  MeetingASVStatisticInfo share_statistics;
   uint64_t number = 0;
   std::string zak, password;
   LeaveMeetingCmd leave_command = END_MEETING;
   SDKError SetEvent(IMeetingServiceEvent* value) override { listener = value; return SDKERR_SUCCESS; }
   MeetingStatus GetMeetingStatus() override { return reported_status; }
+  SDKError GetMeetingShareStatisticInfo(MeetingASVStatisticInfo& info) override {
+    ++statistics_calls; info = share_statistics; return statistics_result;
+  }
+  ConnectionQuality GetSharingConnQuality(bool sending) override {
+    require(!sending, "Share diagnostics must query receive quality rather than send quality");
+    return Conn_Quality_Good;
+  }
   SDKError Join(JoinParam& params) override {
     require(params.userType == SDK_UT_WITHOUT_LOGIN, "Native join must use without-login user type");
     auto& user = params.param.withoutloginuserJoin;
@@ -192,14 +204,14 @@ struct Meeting : IMeetingServiceStub {
   IMeetingRecordingController* GetMeetingRecordingController() override { return &recording; }
   IMeetingAudioController* GetMeetingAudioController() override { return &audio; }
   IMeetingReminderController* GetMeetingReminderController() override { return &reminder; }
-  IMeetingShareController* GetMeetingShareController() override { return &share; }
+  IMeetingShareController* GetMeetingShareController() override { return share_available ? &share : nullptr; }
 };
-struct Backend { Auth auth; Meeting meeting; Settings settings; Raw raw; Renderer renderer; int cleanup = 0, renderers = 0; };
+struct Backend { Auth auth; Meeting meeting; Settings settings; Raw raw; Renderer renderer; int cleanup = 0, renderers = 0; bool sdk_logging = false; };
 Backend* backend;
 
 namespace ZOOMSDK {
 extern "C" {
-SDKError InitSDK(InitParam&) { return SDKERR_SUCCESS; }
+SDKError InitSDK(InitParam& params) { backend->sdk_logging = params.enableLogByDefault; return SDKERR_SUCCESS; }
 SDKError CreateAuthService(IAuthService** out) { *out = &backend->auth; return SDKERR_SUCCESS; }
 SDKError CreateMeetingService(IMeetingService** out) { *out = &backend->meeting; return SDKERR_SUCCESS; }
 SDKError CreateSettingService(ISettingService** out) { *out = &backend->settings; return SDKERR_SUCCESS; }
@@ -241,6 +253,11 @@ struct Output {
 JoinConfig config() { return {"00000000-0000-4000-8000-000000000001", "123456789", "host", "pass", "Recorder", "secret-jwt", "secret-zak"}; }
 void admit(ZoomSession& session, Backend& sdk) {
   session.start();
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+  require(sdk.sdk_logging, "The diagnostic build must enable SDK logs");
+#else
+  require(!sdk.sdk_logging, "The normal build must keep SDK logging off");
+#endif
   require(sdk.meeting.joins == 0, "Join must wait for SDK authentication callback");
   require(sdk.settings.audio_requests == 0, "Audio settings must wait for SDK authentication callback");
   sdk.auth.listener->onAuthenticationReturn(AUTHRET_SUCCESS);
@@ -741,6 +758,55 @@ void share_snapshots_preserve_pixels_and_every_frame_event() {
   }
 }
 
+void share_diagnostics_are_read_only_and_report_missing_data() {
+  for (int scenario = 0; scenario < 3; ++scenario) {
+    Backend sdk; backend = &sdk; Output output;
+    sdk.meeting.share_statistics.recvBandwidth = 512;
+    sdk.meeting.share_statistics.recvFps = 15;
+    sdk.meeting.share_statistics.recvResolution = (360 << 16) | 640;
+    if (scenario == 1) {
+      sdk.meeting.statistics_result = SDKERR_NO_IMPL;
+      sdk.meeting.share.list_available = false;
+    } else if (scenario == 2) sdk.meeting.share_available = false;
+    CaptureRuntime capture(output.root, "session");
+    {
+      ZoomSession session(config(), capture);
+      session.start();
+      sdk.auth.listener->onAuthenticationReturn(AUTHRET_SUCCESS); session.tick();
+      require(sdk.meeting.statistics_calls == 0, "Diagnostics must never query meeting statistics before admission");
+      sdk.meeting.listener->onMeetingStatusChanged(MEETING_STATUS_INMEETING, 0); session.tick();
+      for (int i = 0; i < 10; ++i) session.tick();
+      require(sdk.raw.subscriptions == 1 && sdk.renderers == 0 && !session.done(),
+              "Missing share discovery or statistics must preserve audio without inventing a share subscription");
+      Packet audio; audio.samples.assign(160, 0);
+      session.onOneWayAudioRawDataReceived(&audio, 42);
+      session.stop("test_stop");
+    }
+    capture.close();
+    require(!capture.failed(), "Read-only diagnostics must preserve capture");
+    const auto records = output.events("sdk.diagnostics.share");
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+    require(sdk.meeting.statistics_calls == 1 && records.size() == 1,
+            "Diagnostics must run on admission and throttle repeated main-loop ticks");
+    const auto& data = records.front()["data"];
+    require(data["statistics_result"] == static_cast<int>(sdk.meeting.statistics_result) &&
+            data["share_controller_available"] == (scenario != 2) && data["sharer_list_available"] == (scenario == 0),
+            "Diagnostics must distinguish an empty list from a missing controller or list");
+    if (scenario == 1) require(data["received"].is_null(), "Failed statistics must not be presented as zero receive traffic");
+    else require(data["received"]["bandwidth"] == 512 && data["received"]["fps"] == 15 &&
+                 data["received"]["width"] == 640 && data["received"]["height"] == 360,
+                 "Unpack the SDK resolution and preserve receive values even when sources are empty");
+    const auto stopped = output.events("sdk.diagnostics.stopped");
+    require(stopped.size() == 1 && stopped.front()["data"]["audio_packets"] == 1 &&
+            stopped.front()["data"]["share"]["frame_callbacks"] == 0,
+            "Persist final audio and share callback counters at shutdown");
+#else
+    require(sdk.meeting.statistics_calls == 0 && records.empty() && output.events("sdk.diagnostics.enabled").empty(),
+            "A normal build must not poll diagnostic APIs or emit diagnostic events");
+#endif
+  }
+}
+
 int main() {
   try {
     early_audio_events_wait_for_admission();
@@ -755,7 +821,8 @@ int main() {
     share_samples_static_frames_at_configured_intervals();
     share_permission_reconnect_and_switching();
     share_snapshots_preserve_pixels_and_every_frame_event();
-    std::cout << "23 SDK adapter scenarios passed (test doubles, no live meeting)\n";
+    share_diagnostics_are_read_only_and_report_missing_data();
+    std::cout << "26 SDK adapter scenarios passed (test doubles, no live meeting)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

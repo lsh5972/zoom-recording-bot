@@ -113,6 +113,9 @@ void ShareCapture::tick(int64_t at_ms) {
 void ShareCapture::onRawDataFrameReceived(YUVRawDataI420* data) {
   try {
     std::lock_guard<std::mutex> lock(mutex_);
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+    ++frame_callbacks_;
+#endif
     if (!receiving_ || !data) return;
     const auto width = data->GetStreamWidth(), height = data->GetStreamHeight();
     const auto y_size = static_cast<size_t>(width) * height;
@@ -161,4 +164,13 @@ void ShareCapture::onShareCursorDataReceived(ZoomSDKShareCursorData info) {
   capture_.event("sdk.callback", {{"interface", "IZoomSDKRendererDelegate"}, {"callback", "onShareCursorDataReceived"},
                                    {"arguments", {{"source_id", info.source_id}, {"x", info.x}, {"y", info.y}}}});
 }
+#ifdef ZOOM_SHARE_DIAGNOSTICS
+nlohmann::json ShareCapture::diagnostics() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return {{"frame_callbacks", frame_callbacks_}, {"renderer_present", renderer_.load() != nullptr},
+          {"receiving", receiving_}, {"user_id", user_id_}, {"source_id", source_id_},
+          {"cached_frame", latest_.has_value()},
+          {"source_timestamp_ms", latest_ ? nlohmann::json(latest_->source_ms) : nlohmann::json(nullptr)}};
+}
+#endif
 }  // namespace zoom_bot

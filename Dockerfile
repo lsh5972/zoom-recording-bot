@@ -21,10 +21,27 @@ RUN cmake -S /src/worker -B /build -DCMAKE_BUILD_TYPE=Release -DZOOM_API_HEADERS
     && cmake --build /build -j 4 && ctest --test-dir /build --output-on-failure
 CMD ["ctest", "--test-dir", "/build", "--output-on-failure"]
 
-FROM build AS sdk-build
+FROM build AS sdk-source
 # Official SDK distribution: h/, libmeetingsdk.so, qt_libs/, and accompanying resources.
 ARG ZOOM_SDK_DIR=vendor/zoom-sdk
 COPY ${ZOOM_SDK_DIR}/ /opt/zoom-sdk/
+
+FROM sdk-source AS diagnostics-build
+RUN test -f /opt/zoom-sdk/libmeetingsdk.so \
+    && ln -sf libmeetingsdk.so /opt/zoom-sdk/libmeetingsdk.so.1 \
+    && cmake -S /src/worker -B /build -DCMAKE_BUILD_TYPE=Release -DZOOM_SDK_ROOT=/opt/zoom-sdk -DZOOM_SHARE_DIAGNOSTICS=ON \
+    && cmake --build /build -j 4 && ctest --test-dir /build --output-on-failure
+
+FROM runtime AS diagnostics
+COPY --from=diagnostics-build /build/zoom-bot-worker /app/zoom-bot-worker
+COPY --from=diagnostics-build /opt/zoom-sdk/ /opt/zoom-sdk/
+COPY docker/entrypoint.sh docker/diagnostics-entrypoint.sh /app/
+RUN chmod 755 /app/entrypoint.sh /app/diagnostics-entrypoint.sh
+ENV LD_LIBRARY_PATH=/opt/zoom-sdk:/opt/zoom-sdk/qt_libs:/opt/zoom-sdk/qt_libs/Qt/lib
+WORKDIR /opt/zoom-sdk
+ENTRYPOINT ["/app/diagnostics-entrypoint.sh"]
+
+FROM sdk-source AS sdk-build
 RUN test -f /opt/zoom-sdk/libmeetingsdk.so \
     && ln -sf libmeetingsdk.so /opt/zoom-sdk/libmeetingsdk.so.1 \
     && cmake -S /src/worker -B /build -DCMAKE_BUILD_TYPE=Release -DZOOM_SDK_ROOT=/opt/zoom-sdk \
