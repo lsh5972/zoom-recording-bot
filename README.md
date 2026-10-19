@@ -174,6 +174,38 @@ docker build --platform linux/amd64 --target worker \
 과거 실행에서 ARM64 입장·WAV, x86_64 입장·WAV·공유 화면 JPEG를 확인했다.
 현재 수정본의 실제 회의 검증 상태는 문서 상단의 구현 상태를 따른다.
 
+### ARM64 공유 화면 진단 이미지
+
+`diagnostics` target은 기존 worker와 같은 입장·녹음 흐름에 읽기 전용 진단을 추가한다.
+공유 화면 문제가 해결된 이미지가 아니다. `worker` target에서는 진단과 SDK 내부 로그가 기본적으로 꺼져 있다.
+기존 ARM64·amd64 이미지를 유지하려면 별도 태그로 빌드한다:
+
+```sh
+docker build --platform linux/arm64 --target diagnostics --build-arg ZOOM_SDK_DIR=vendor/zoom-sdk -t zoom-bot-worker-arm64:diagnostic .
+ZOOM_BOT_IMAGE=zoom-bot-worker-arm64:diagnostic ./bin/zoom-bot-docker run 12345678901
+```
+
+`.env` 수정이나 Ruby 관리 이미지 재빌드는 필요 없다. `12345678901`은 테스트할 실제 회의 ID로 바꾼다.
+이미 출력이 있는 회의의 `runs/<meeting_id>`는 기존 데이터 보호를 위해 재사용되지 않는다.
+화자별 WAV와 공유 JPG 저장·권한 확인·회의 종료 처리는 기존 worker와 같다.
+
+- `runs/<meeting_id>/output/events.jsonl`의 `sdk.diagnostics.enabled`로 진단 빌드를 구분한다.
+- `sdk.diagnostics.share`는 입장 후 1초 간격으로 공유 통계 반환 코드, 수신 대역폭·FPS·해상도,
+  연결 품질, 공유 컨트롤러·목록의 존재 여부, 실제 공유 소스 목록과 캡처 상태를 기록한다.
+  `received: null`은 통계 조회 실패이며, 성공한 조회의 0과 구분한다.
+- `audio_packets`는 정상 PCM 콜백 수다. `share.frame_callbacks`는 등록한 공유 렌더러의 콜백 수다.
+  렌더러를 아직 만들지 못했다면 프레임 콜백 0만으로 SDK 내부의 미디어 수신 실패를 단정할 수 없다.
+- `sdk.diagnostics.stopped`에는 종료 시점의 오디오·공유 콜백 누계가 남는다.
+- SDK 내부 로그를 켜고, SDK 로그 디렉터리를 `runs/<meeting_id>/output/sdk-logs/`로 연결한다.
+  SDK 내부 로그는 암호화될 수 있어 사람이 읽을 수 있는 진단 값은 위 이벤트에 별도로 기록한다.
+  SDK의 `data` 디렉터리나 `join.json`은 로그 폴더로 복사하지 않는다.
+
+통계 API의 실패나 빈 공유 목록은 진단 결과로 남기며 녹음을 중단하거나 임의 소스 ID로 구독하지 않는다.
+진단 이미지의 SDK 로깅·추가 조회 비용은 운영 성능 측정에 포함하지 않는다.
+ARM64 실제 SDK 링크와 이미지 내부 CTest 6개를 통과했다. 네트워크를 차단하고 가짜 토큰으로 실행해
+SDK 초기화 성공, 인증 거부 후 미입장 종료, 컨테이너 삭제 후 SDK 로그 파일 보존을 확인했다.
+실제 회의에서 공유 이벤트·수신 통계·JPEG를 얻는지는 아직 검증하지 않았다.
+
 Docker는 자격증명·회의 출력 폴더를 빌드 context에서 제외한다. 한 회의의 worker에는
 가상 스피커·무음 마이크를 사용하는 PulseAudio를 함께 시작하며, 추가 권한 컨테이너는 사용하지 않는다.
 
