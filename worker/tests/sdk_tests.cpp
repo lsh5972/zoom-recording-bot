@@ -39,10 +39,11 @@ struct Participants : IMeetingParticipantsControllerStub {
   IMeetingParticipantsCtrlEvent* listener = nullptr;
   User self{1, USERROLE_HOST, "Bot"}, alice{42, USERROLE_ATTENDEE, "Alice"}, bob{73, USERROLE_ATTENDEE, "Bob"};
   bool alice_available = true;
+  int self_queries = 0;
   List<uint32_t> users;
   Participants() { users.items = {1, 42, 73}; }
   SDKError SetEvent(IMeetingParticipantsCtrlEvent* value) override { listener = value; return SDKERR_SUCCESS; }
-  IUserInfo* GetMySelfUser() override { return &self; }
+  IUserInfo* GetMySelfUser() override { ++self_queries; return &self; }
   IList<uint32_t>* GetParticipantsList() override { return &users; }
   IUserInfo* GetUserByUserID(uint32_t id) override { return id == 1 ? &self : id == 42 ? (alice_available ? &alice : nullptr) : &bob; }
 };
@@ -171,10 +172,12 @@ struct Meeting : IMeetingServiceStub {
   Reminder reminder;
   ShareController share;
   int joins = 0, starts = 0, leaves = 0;
+  MeetingStatus reported_status = MEETING_STATUS_CONNECTING;
   uint64_t number = 0;
   std::string zak, password;
   LeaveMeetingCmd leave_command = END_MEETING;
   SDKError SetEvent(IMeetingServiceEvent* value) override { listener = value; return SDKERR_SUCCESS; }
+  MeetingStatus GetMeetingStatus() override { return reported_status; }
   SDKError Join(JoinParam& params) override {
     require(params.userType == SDK_UT_WITHOUT_LOGIN, "Native join must use without-login user type");
     auto& user = params.param.withoutloginuserJoin;
@@ -271,6 +274,67 @@ void rejected_auth_never_joins() {
   }
   capture.close(); output.events();
   require(sdk.cleanup == 1, "SDK must clean up after auth failure");
+}
+
+void early_audio_events_wait_for_admission() {
+  Backend sdk; backend = &sdk; Output output;
+  CaptureRuntime capture(output.root, "session");
+  {
+    ZoomSession session(config(), capture);
+    session.start(); sdk.auth.listener->onAuthenticationReturn(AUTHRET_SUCCESS); session.tick();
+    sdk.meeting.participants.self.audio_type = AUDIOTYPE_VOIP;
+    sdk.meeting.participants.self.muted = false;
+    const auto queries = sdk.meeting.participants.self_queries;
+    List<uint32_t> joined; joined.items = {42};
+    sdk.meeting.participants.listener->onUserJoin(&joined, nullptr);
+    sdk.meeting.audio.listener->onUserAudioStatusChange(nullptr, nullptr); session.tick();
+    require(sdk.meeting.participants.self_queries == queries && sdk.meeting.audio.muted_user == 0,
+            "Audio callbacks during admission must not query or control the bot before INMEETING");
+    require(sdk.meeting.recording.starts == 0 && sdk.raw.subscriptions == 0,
+            "Participant and audio callbacks alone must never authorize capture");
+    sdk.meeting.listener->onMeetingStatusChanged(MEETING_STATUS_INMEETING, 0); session.tick();
+    require(sdk.meeting.audio.muted_user == 1 && sdk.raw.subscriptions == 1,
+            "Admission must still mute the bot and start authorized recording");
+    session.stop("test_stop");
+  }
+  capture.close();
+  require(!capture.failed(), "Early audio events must not fail capture");
+}
+
+void missing_admission_callback_uses_verified_sdk_state() {
+  for (bool allowed : {false, true}) {
+    Backend sdk; backend = &sdk; Output output;
+    sdk.meeting.reported_status = MEETING_STATUS_INMEETING;
+    sdk.meeting.participants.self.role = USERROLE_ATTENDEE;
+    sdk.meeting.recording.permission = allowed ? SDKERR_SUCCESS : SDKERR_NO_PERMISSION;
+    CaptureRuntime capture(output.root, "session");
+    {
+      ZoomSession session(config(), capture);
+      session.start(); sdk.auth.listener->onAuthenticationReturn(AUTHRET_SUCCESS); session.tick();
+      require(sdk.raw.subscriptions == (allowed ? 1 : 0),
+              "Verified SDK meeting state must recover admission without bypassing recording permission");
+      sdk.meeting.listener->onMeetingStatusChanged(MEETING_STATUS_INMEETING, 0); session.tick();
+      require(sdk.meeting.recording.starts == (allowed ? 1 : 0),
+              "A late admission callback must not start a second recording");
+      if (allowed) {
+        SF_INFO info{};
+        auto* file = sf_open(FVAD_FIXTURE, SFM_READ, &info);
+        require(file != nullptr, "Speech fixture must load");
+        Packet packet; packet.samples.resize(info.frames);
+        sf_readf_short(file, packet.samples.data(), info.frames); sf_close(file);
+        sdk.raw.delegate->onOneWayAudioRawDataReceived(&packet, 42);
+      }
+      session.stop("test_stop");
+    }
+    capture.close();
+    require(!capture.failed() && output.events("meeting.admitted").size() == 1,
+            "Recovered admission must initialize the capture clock and participants exactly once");
+    require(output.events("audio.chunk_ready").empty() == !allowed,
+            "Recovered authorized admission must produce WAVs from PCM; denied admission must not");
+    for (const auto& chunk : output.events("audio.chunk_ready"))
+      require(std::filesystem::exists(output.root / chunk["data"]["wav_path"].get<std::string>()),
+              "Recovery must publish the finalized WAV rather than only a chunk event");
+  }
 }
 
 void sdk_permission_controls_recording() {
@@ -679,6 +743,8 @@ void share_snapshots_preserve_pixels_and_every_frame_event() {
 
 int main() {
   try {
+    early_audio_events_wait_for_admission();
+    missing_admission_callback_uses_verified_sdk_state();
     rejected_auth_never_joins(); sdk_permission_controls_recording();
     attendee_requests_recording_once_and_waits_for_grant();
     revocation_stops_and_grant_resumes(); reconnect_and_role_changes_preserve_permissions(); delayed_audio_and_subscription_failure();
@@ -689,7 +755,7 @@ int main() {
     share_samples_static_frames_at_configured_intervals();
     share_permission_reconnect_and_switching();
     share_snapshots_preserve_pixels_and_every_frame_event();
-    std::cout << "20 SDK adapter scenarios passed (test doubles, no live meeting)\n";
+    std::cout << "23 SDK adapter scenarios passed (test doubles, no live meeting)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

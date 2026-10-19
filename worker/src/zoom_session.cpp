@@ -65,6 +65,7 @@ ZoomSession::ZoomSession(JoinConfig config, CaptureRuntime& capture)
   };
   audio_events_.after_onUserAudioStatusChange = [this](IList<IUserAudioStatus*>*, const zchar_t*) {
     defer([this] {
+      if (!in_meeting_ || done_) return;
       auto* self = participants_ ? participants_->GetMySelfUser() : nullptr;
       if (self && audio_ && self->GetUserID() != 0 && self->GetAudioJoinType() != AUDIOTYPE_NONE && !self->IsAudioMuted())
         check(audio_->MuteAudio(self->GetUserID()), "mute_self");
@@ -294,6 +295,7 @@ void ZoomSession::snapshot_participants() {
 void ZoomSession::status(MeetingStatus state, int result) {
   if (done_) return;
   if (state == MEETING_STATUS_INMEETING) {
+    if (in_meeting_) return;
     in_meeting_ = true;
     register_events(true);
     snapshot_participants();
@@ -406,8 +408,19 @@ void ZoomSession::tick() {
   try {
     for (auto& action : actions) { if (done_) break; action(); }
     const auto now = std::chrono::steady_clock::now();
-    if (in_meeting_ && now >= next_permission_check_) {
-      try_recording();
+    if (join_requested_ && !done_ && now >= next_permission_check_) {
+      if (!in_meeting_) {
+        const auto observed = meeting_->GetMeetingStatus();
+        if (static_cast<int>(observed) != last_polled_status_) {
+          last_polled_status_ = static_cast<int>(observed);
+          capture_.event("sdk.meeting_status", {{"status", last_polled_status_}, {"source", "GetMeetingStatus"}});
+        }
+        if (observed == MEETING_STATUS_INMEETING) {
+          capture_.admitted();
+          status(observed, 0);
+        }
+      }
+      if (in_meeting_) try_recording();
       next_permission_check_ = now + std::chrono::seconds(1);
     }
     if (subscribed_ && receiving_) share_.tick(capture_.now_ms());
