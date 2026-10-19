@@ -1,0 +1,33 @@
+worker/tests/sdk_tests.cpp
+  s_94b8728166fbc7::t_6f26dafa612752 640,755
+  s_94b8728166fbc7::t_45d8ac2840c414 695-696
+  s_94b8728166fbc7::t_657e614b269efb 126-127,129-133,641-642,663-694,697-710,812,816
+  s_94b8728166fbc7::t_f46dc4ce9fe423 711-712
+worker/include/zoom_bot/share_capture.hpp
+  s_94b8728166fbc7::t_6f26dafa612752 13
+worker/src/zoom_session.cpp
+  s_94b8728166fbc7::t_6f26dafa612752 351,364
+README.md
+  s_94b8728166fbc7::t_45d8ac2840c414 36-38,256-258
+  s_94b8728166fbc7::t_f5ce44d61d7059 39-40
+  s_94b8728166fbc7::t_4120a0c30fdcd9 41
+worker/src/share_capture.cpp
+  s_94b8728166fbc7::t_6f26dafa612752 74,76-77,97-103,107
+  s_94b8728166fbc7::t_127ee6ef0f5282 78-80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b87c556e73be4e14f8b4a6112eee3f4716d0e98e",
+  "prompts": {},
+  "sessions": {
+    "s_94b8728166fbc7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0f0d4-b78d-73d3-ad32-f8b29da885c8",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Soohyeon Lee <soohyeon.lee@privatenote.co.kr>"
+    }
+  }
+}
