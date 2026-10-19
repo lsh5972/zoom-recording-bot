@@ -128,6 +128,13 @@ int main() {
     }
     {
       Output output;
+      CaptureRuntime capture(output.root, "session", 4096);
+      capture.event("sdk.callback", {{"nested", nlohmann::json::array({{{"name", std::string(8192, '\\')}}})}});
+      capture.close();
+      require(capture.failed(), "Queue accounting must include strings inside nested objects and arrays without serializing them");
+    }
+    {
+      Output output;
       CaptureRuntime capture(output.root, "session", 32 * 1024 * 1024, 1700000000000);
       capture.admitted();
       capture.cloud_recording(0);
@@ -184,7 +191,7 @@ int main() {
                 "Missing origins must be rejected without echoing credentials");
       }
     }
-    std::cout << "11 capture/config cases passed\n";
+    std::cout << "12 capture/config cases passed\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

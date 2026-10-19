@@ -1,6 +1,7 @@
 #include "zoom_bot/screenshot_writer.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -46,8 +47,12 @@ std::vector<unsigned char> rgb(const ScreenshotFrame& frame) {
   const auto* u = y + pixels;
   const auto* v = u + static_cast<size_t>(chroma_width) * chroma_height;
   std::vector<unsigned char> result(width * height * 3, 0);
+  std::array<int, width> columns;
+  std::array<int, height> rows;
+  for (int column = 0; column < image_width; ++column) columns[column] = column * rotated_width / image_width;
+  for (int row = 0; row < image_height; ++row) rows[row] = row * rotated_height / image_height;
   for (int row = 0; row < image_height; ++row) for (int column = 0; column < image_width; ++column) {
-    const int rx = column * rotated_width / image_width, ry = row * rotated_height / image_height;
+    const int rx = columns[column], ry = rows[row];
     const int sx = frame.rotation == 90 ? ry : frame.rotation == 180 ? frame.width - rx - 1 :
                    frame.rotation == 270 ? frame.width - ry - 1 : rx;
     const int sy = frame.rotation == 90 ? frame.height - rx - 1 : frame.rotation == 180 ? frame.height - ry - 1 :

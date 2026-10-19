@@ -113,6 +113,23 @@ int main() {
     const auto full = writer.write(frame, 24000, recordings);
     require(decode(output.root / full["image_path"].get<std::string>())[center] >= 14,
             "Changing color range with the same pixel buffer must invalidate cached colors");
+    auto quadrants = std::make_shared<std::vector<unsigned char>>(24, 128);
+    const int levels[] = {16, 82, 145, 235};
+    for (int row = 0; row < 4; ++row) for (int column = 0; column < 4; ++column)
+      (*quadrants)[row * 4 + column] = levels[(row / 2) * 2 + column / 2];
+    frame.i420 = quadrants; frame.limited_range = true;
+    const int expected[][4] = {{0, 77, 150, 255}, {150, 0, 255, 77},
+                              {255, 150, 77, 0}, {77, 255, 0, 150}};
+    for (int turn = 0; turn < 4; ++turn) {
+      frame.rotation = turn * 90;
+      const auto image = writer.write(frame, 25000 + turn, recordings);
+      pixels = decode(output.root / image["image_path"].get<std::string>());
+      for (int corner = 0; corner < 4; ++corner) {
+        const int x = corner % 2 == 0 ? 230 : 410, y = corner / 2 == 0 ? 90 : 270;
+        require(std::abs(static_cast<int>(pixels[(y * 640 + x) * 3]) - expected[turn][corner]) < 8,
+                "Coordinate lookup tables must preserve each image quadrant in all four rotations");
+      }
+    }
     frame.i420.reset();
     try { writer.write(frame, 20000, recordings); throw std::runtime_error("Invalid frame accepted"); }
     catch (const std::runtime_error& error) {

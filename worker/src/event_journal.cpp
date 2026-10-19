@@ -15,7 +15,10 @@ EventJournal::EventJournal(const std::filesystem::path& output, std::string sess
   if (fd_ < 0) throw std::runtime_error("Cannot create a new event journal");
 }
 
-EventJournal::~EventJournal() { close(fd_); }
+EventJournal::~EventJournal() {
+  try { sync(); } catch (...) {}  // Explicit sync at shutdown reports errors; destruction only retries.
+  close(fd_);
+}
 
 void EventJournal::append(const std::string& type, int64_t capture_ms, nlohmann::json payload) {
   const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -31,6 +34,18 @@ void EventJournal::append(const std::string& type, int64_t capture_ms, nlohmann:
     if (count <= 0) throw std::runtime_error("Event journal write failed");
     written += static_cast<size_t>(count);
   }
+  dirty_ = true;
+  sync_if_due();
+}
+
+void EventJournal::sync_if_due() {
+  if (dirty_ && std::chrono::steady_clock::now() >= next_sync_) sync();
+}
+
+void EventJournal::sync() {
+  if (!dirty_) return;
   if (fsync(fd_) != 0) throw std::runtime_error("Event journal sync failed");
+  dirty_ = false;
+  next_sync_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
 }
 }  // namespace zoom_bot

@@ -11,6 +11,22 @@ int64_t steady_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+size_t json_storage_bytes(const nlohmann::json& value) {
+  using Json = nlohmann::json;
+  size_t bytes = sizeof(Json);
+  if (value.is_string())
+    bytes += sizeof(Json::string_t) + value.get_ref<const Json::string_t&>().capacity() + 1;
+  else if (value.is_object()) {
+    bytes += sizeof(Json::object_t);
+    for (auto entry = value.begin(); entry != value.end(); ++entry)
+      bytes += sizeof(Json::object_t::value_type) + 4 * sizeof(void*) + entry.key().capacity() + 1 +
+               json_storage_bytes(entry.value()) - sizeof(Json);
+  } else if (value.is_array()) {
+    bytes += sizeof(Json::array_t) + value.get_ref<const Json::array_t&>().capacity() * sizeof(Json);
+    for (const auto& entry : value) bytes += json_storage_bytes(entry) - sizeof(Json);
+  }
+  return bytes;
+}
 }
 
 CaptureRuntime::CaptureRuntime(const std::filesystem::path& output, const std::string& session_id,
@@ -37,17 +53,21 @@ void CaptureRuntime::fail() noexcept { failed_ = true; ready_.notify_one(); }
 
 void CaptureRuntime::push(Item item) noexcept {
   try {
-    item.bytes = sizeof(Item) + item.text.size() + item.data.dump().size() +
-                 item.packet.samples.size() * sizeof(int16_t) + (item.frame.i420 ? item.frame.i420->size() : 0);
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (closing_ || failed_) return;
-    if (queue_.size() >= 20000 || item.bytes > capacity_ - std::min(bytes_, capacity_)) {
-      fail();  // Fail closed; SDK main loop will stop capture rather than silently lose audio.
-      return;
+    item.bytes = sizeof(Item) + item.text.capacity() + 1 + json_storage_bytes(item.data) - sizeof(nlohmann::json) +
+                 item.packet.samples.capacity() * sizeof(int16_t) + (item.frame.i420 ? item.frame.i420->capacity() : 0);
+    bool wake;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (closing_ || failed_) return;
+      if (queue_.size() >= 20000 || item.bytes > capacity_ - std::min(bytes_, capacity_)) {
+        fail();  // Fail closed; SDK main loop will stop capture rather than silently lose audio.
+        return;
+      }
+      wake = queue_.empty();
+      bytes_ += item.bytes;
+      queue_.push_back(std::move(item));
     }
-    bytes_ += item.bytes;
-    queue_.push_back(std::move(item));
-    ready_.notify_one();
+    if (wake) ready_.notify_one();
   } catch (...) { fail(); }
 }
 
@@ -129,11 +149,13 @@ void CaptureRuntime::consume() noexcept {
         }
         if (closing) break;
         audio_.advance(now_ms());
+        events_.sync_if_due();
         continue;
       }
       switch (item.kind) {
         case Kind::Screenshot:
           events_.append("screenshot.saved", item.at_ms, screenshots_.write(item.frame, item.at_ms, recordings_));
+          events_.sync();
           break;
         case Kind::Event: events_.append(item.text, item.at_ms, std::move(item.data)); break;
         case Kind::Joined:
@@ -204,11 +226,13 @@ void CaptureRuntime::consume() noexcept {
       }
     }
     audio_.finish(failed_ ? "capture_failed" : "worker_stopped", now_ms());
+    events_.sync();
   } catch (...) {
     failed_ = true;
     try {
       events_.append("capture.error", now_ms(), {{"reason", "capture_consumer_failed"}});
       audio_.finish("capture_failed", now_ms());
+      events_.sync();
     } catch (...) {}  // A failed storage device cannot accept its own error event.
   }
 }

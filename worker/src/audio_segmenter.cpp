@@ -160,6 +160,7 @@ void AudioSegmenter::publish(const std::string& reason, int64_t limit_ms) {
                      {"sample_format", "pcm_s16le"}, {"sample_frames", samples.size() / channels_},
                      {"wav_path", wav_.write(relative, rate_, channels_, samples)}});
     events_.append("audio.chunk_ready", end, std::move(metadata));
+    events_.sync();
   }
   chunk_.clear();
   overlap_ms_ = 0;

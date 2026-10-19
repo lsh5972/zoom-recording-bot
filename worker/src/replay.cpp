@@ -68,6 +68,7 @@ int main(int argc, char** argv) {
       end_ms = std::max(end_ms, track.start_ms);
     }
     pipeline.finish("replay_complete", end_ms);
+    events.sync();
     std::cout << "Replay complete. No Zoom meeting was joined. Output: " << argv[first + 1] << '\n';
     return 0;
   } catch (const std::exception& error) {
