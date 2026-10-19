@@ -147,7 +147,7 @@ docker build --target api-check -t zoom-bot-api-check:local .
 
 ```sh
 # Apple Silicon의 네이티브 Linux ARM64 worker:
-docker build --platform linux/arm64 --target worker -t zoom-bot-worker:local .
+docker build --platform linux/arm64 --target worker -t zoom-bot-worker-arm64:local .
 
 # 받은 Linux-All 배포본의 x86_64 worker (ARM64 SDK 디렉터리는 그대로 유지):
 docker build --platform linux/amd64 --target worker \
@@ -172,8 +172,15 @@ Docker는 자격증명·회의 출력 폴더를 빌드 context에서 제외한�
 
 `ZOOM_BOT_IMAGE`는 로컬에 빌드된 worker 이미지 이름이다.
 `run`은 이미지 존재 여부부터 확인한 뒤 새 세션을 준비한다.
-ARM64 빌드는 `ZOOM_BOT_IMAGE='zoom-bot-worker:local'`, x86_64 빌드는
+ARM64 빌드는 `ZOOM_BOT_IMAGE='zoom-bot-worker-arm64:local'`, x86_64 빌드는
 `ZOOM_BOT_IMAGE='zoom-bot-worker:amd64'`로 `.env`에 설정한다.
+두 이미지를 함께 유지하면서 실행할 때 선택하려면 명령 앞에서 값을 지정한다.
+이 값은 `.env`보다 우선하며 다른 실행의 이미지 선택에 영향을 주지 않는다.
+
+```sh
+ZOOM_BOT_IMAGE=zoom-bot-worker:amd64 ./bin/zoom-bot-docker run 12345678901
+ZOOM_BOT_IMAGE=zoom-bot-worker-arm64:local ./bin/zoom-bot-docker run 12345678902
+```
 
 ```sh
 ./bin/zoom-bot-docker run 12345678901
