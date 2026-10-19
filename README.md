@@ -28,8 +28,14 @@ Linux x86_64 SDK 7.2.1을 Apple Silicon Docker의 에뮬레이션으로 실행�
 같은 버전의 ARM64 시험에서는 WAV는 생성됐지만 공유 이벤트·소스를 받지 못했다.
 ARM64 공유 화면 저장은 아직 해결되지 않았다.
 2026-10-19 ARM64 재시험에서는 입장 완료 콜백·PCM 수신 없이 WAV가 생성되지 않았다.
-입장 전 오디오 제어 차단과 SDK 상태 직접 확인 경로를 추가해 테스트 대역으로 검증했지만,
-실제 ARM64 SDK의 입장·WAV 재검증과 네이티브 CPU 측정은 아직 남아 있다.
+입장 전 오디오 제어 차단과 SDK 상태 직접 확인을 추가한 뒤에도 SDK가 `CONNECTING`에 머물렀다.
+이후 수동 GLib 폴링을 [공식 샘플](https://github.com/zoom/meetingsdk-linux-raw-recording-sample/blob/main/demo/meeting_sdk_demo.cpp)의
+`GMainLoop`로 바꾸고 SDK 초기화·주기 작업도 루프 안에서 실행한다.
+실제 worker 진입점과 GLib를 사용하는 오프라인 테스트로 콜백 스레드, SIGTERM 처리, 초기화 실패를 검증한다.
+ARM64·x86_64 모두 실제 SDK 링크·Release 빌드와 오프라인 테스트 5개를 통과했다. 이 테스트의 Zoom 세션은 대역이다.
+사용자 ARM64 재시험에서도 SDK가 `CONNECTING`에 머물러 녹음 시작·WAV 생성에 도달하지 못했다.
+이는 실제 Zoom 참가자 목록에 봇이 없는지를 확인한 결과는 아니다. 이 수정으로 ARM64 녹음 문제가 해결되지 않았다.
+현재 수정본의 실제 x86_64 녹음·공유 화면과 양쪽 아키텍처의 CPU 사용량은 검증하지 않았다.
 SDK가 연속 10ms PCM에 같은 타임스탬프를 전달하는 경우도 모든 샘플을 보존하도록 보정한다.
 WAV 파일명에는 Zoom 표시 이름과 녹화본별 시간이 들어간다. 녹화가 없는 구간도 저장하며
 그때는 GMT+9의 24시간제 시각을 사용한다. 이 시간축 변경은 테스트 대역으로 검증하며
@@ -161,7 +167,8 @@ docker build --platform linux/amd64 --target worker \
 `--platform`만 바꾸면 SDK 아키텍처가 자동 선택되지 않는다.
 `ZOOM_SDK_DIR`은 빌드 context 안의 SDK 배포 디렉터리이며 기본값은 `vendor/zoom-sdk`다.
 운영 worker와 API 검증 이미지는 Release로 빌드해 C++ 처리 코드와 VAD에 컴파일러 최적화를 적용한다.
-ARM64는 실제 입장·WAV 생성을 검증했다. x86_64는 빌드·실제 입장·WAV·공유 화면 JPEG 생성을 검증했다.
+과거 실행에서 ARM64 입장·WAV, x86_64 입장·WAV·공유 화면 JPEG를 확인했다.
+현재 수정본의 실제 회의 검증 상태는 문서 상단의 구현 상태를 따른다.
 
 Docker는 자격증명·회의 출력 폴더를 빌드 context에서 제외한다. 한 회의의 worker에는
 가상 스피커·무음 마이크를 사용하는 PulseAudio를 함께 시작하며, 추가 권한 컨테이너는 사용하지 않는다.

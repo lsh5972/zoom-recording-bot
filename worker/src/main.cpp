@@ -3,10 +3,33 @@
 #include <glib.h>
 #include <csignal>
 #include <iostream>
+#include <memory>
 
 namespace {
 volatile std::sig_atomic_t interrupted = 0;
 void signal_handler(int) { interrupted = 1; }
+
+struct SessionLoop {
+  zoom_bot::ZoomSession& session;
+  zoom_bot::CaptureRuntime& capture;
+  GMainLoop* loop;
+  bool started = false, failed = false;
+};
+
+gboolean update_session(gpointer data) {
+  auto& state = *static_cast<SessionLoop*>(data);
+  try {
+    if (!state.started) { state.started = true; state.session.start(); }
+    if (interrupted) state.session.stop("signal");
+    state.session.tick();
+  } catch (...) {
+    state.failed = true;
+    state.capture.event("worker.error", {{"reason", "sdk_start_failed"}});
+    state.session.stop("sdk_start_failed");
+  }
+  if (state.failed || state.session.done()) g_main_loop_quit(state.loop);
+  return G_SOURCE_CONTINUE;
+}
 }
 
 int main(int argc, char** argv) {
@@ -22,21 +45,13 @@ int main(int argc, char** argv) {
     bool failed = false;
     {
       zoom_bot::ZoomSession session(std::move(config), capture);
-      try {
-        session.start();
-        while (!session.done()) {
-          // Bound each iteration so a busy SDK event source cannot starve SIGTERM or queue failure checks.
-          for (int i = 0; i < 100 && g_main_context_pending(nullptr); ++i) g_main_context_iteration(nullptr, false);
-          if (interrupted) session.stop("signal");
-          session.tick();
-          g_usleep(10000);
-        }
-        failed = session.failed_session();
-      } catch (...) {
-        capture.event("worker.error", {{"reason", "sdk_start_failed"}});
-        session.stop("sdk_start_failed");
-        failed = true;
-      }
+      std::unique_ptr<GMainLoop, decltype(&g_main_loop_unref)> loop(g_main_loop_new(nullptr, false), g_main_loop_unref);
+      SessionLoop state{session, capture, loop.get()};
+      // Keep GLib dispatch and SDK calls on the main thread, including authentication and join.
+      const auto timer = g_timeout_add(10, update_session, &state);
+      g_main_loop_run(loop.get());
+      g_source_remove(timer);
+      failed = state.failed || session.failed_session();
     }  // SDK teardown completes before the capture consumer closes.
     capture.close();
     return failed || capture.failed() ? 1 : 0;
