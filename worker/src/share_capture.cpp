@@ -71,9 +71,13 @@ void ShareCapture::changed(uint32_t user_id, uint32_t source_id, SharingStatus s
            (source_id == source_id_ || (!source_id && user_id == user_id_))) stop();
 }
 
-void ShareCapture::refresh(IMeetingShareController* controller) {
+void ShareCapture::refresh(IMeetingShareController* controller, IMeetingParticipantsController* participants) {
   if (!controller) return;
-  auto* users = controller->GetViewableSharingUserList();
+  auto* sharers = controller->GetViewableSharingUserList();
+  const auto sharer_count = sharers ? sharers->GetCount() : 0;
+  const bool fallback = sharer_count == 0 && participants;
+  // An empty or unavailable sharer list can still allow per-participant source queries.
+  auto* users = fallback ? participants->GetParticipantsList() : sharers;
   if (!users) return;
   uint32_t user_id = 0, source_id = 0;
   auto snapshot = nlohmann::json::array();
@@ -90,13 +94,17 @@ void ShareCapture::refresh(IMeetingShareController* controller) {
       if (!source_id) { user_id = info.userid; source_id = info.shareSourceID; }
     }
   }
-  if (snapshot != previous_sources_) {
-    capture_.event("share.sources", {{"sources", snapshot}, {"sharing_user_count", users->GetCount()}});
-    previous_sources_ = std::move(snapshot);
+  nlohmann::json discovery = {{"sources", std::move(snapshot)},
+                              {"sharing_user_count", sharers ? nlohmann::json(sharer_count) : nlohmann::json(nullptr)},
+                              {"lookup_method", fallback ? "participants" : "sharing_users"},
+                              {"queried_user_count", users->GetCount()}};
+  if (discovery != previous_sources_) {
+    capture_.event("share.sources", discovery);
+    previous_sources_ = std::move(discovery);
   }
   if (current_visible) return;
   if (source_id) select(user_id, source_id);
-  else if (users->GetCount() == 0) stop();
+  else if (sharer_count == 0) stop();
 }
 
 void ShareCapture::tick(int64_t at_ms) {

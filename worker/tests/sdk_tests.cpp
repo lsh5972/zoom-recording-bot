@@ -123,9 +123,14 @@ struct ShareController : IMeetingShareControllerStub {
   IMeetingShareCtrlEvent* listener = nullptr;
   List<uint32_t> users;
   List<ZoomSDKSharingSourceInfo> sources;
+  bool user_list_available = true;
+  std::vector<uint32_t> source_queries;
   SDKError SetEvent(IMeetingShareCtrlEvent* value) override { listener = value; return SDKERR_SUCCESS; }
-  IList<uint32_t>* GetViewableSharingUserList() override { return &users; }
-  IList<ZoomSDKSharingSourceInfo>* GetSharingSourceInfoList(unsigned int) override { return &sources; }
+  IList<uint32_t>* GetViewableSharingUserList() override { return user_list_available ? &users : nullptr; }
+  IList<ZoomSDKSharingSourceInfo>* GetSharingSourceInfoList(unsigned int user) override {
+    source_queries.push_back(user);
+    return !sources.items.empty() && sources.items.front().userid == user ? &sources : nullptr;
+  }
   ZoomSDKSharingSourceInfo begin(uint32_t user = 42, uint32_t source = 900) {
     ZoomSDKSharingSourceInfo info;
     info.userid = user; info.shareSourceID = source; info.status = Sharing_Other_Share_Begin;
@@ -632,7 +637,9 @@ void share_samples_static_frames_at_configured_intervals() {
     share.tick(0);
     require(sdk.renderers == 0, "No sharing must not create a renderer or images");
     sdk.meeting.share.begin();
-    share.refresh(&sdk.meeting.share);
+    share.refresh(&sdk.meeting.share, &sdk.meeting.participants);
+    require(sdk.meeting.share.source_queries == std::vector<uint32_t>{42},
+            "An available sharer list must keep the existing targeted lookup path");
     require(sdk.renderer.source == 900 && sdk.renderer.resolution == ZoomSDKResolution_360P,
             "Late admission must subscribe to the actual share source ID at 360p");
     sdk.renderer.delegate->onRawDataFrameReceived(&frame);
@@ -651,6 +658,56 @@ void share_samples_static_frames_at_configured_intervals() {
           "Save static slides every configured interval without requiring a new raw frame");
   require(images[1]["data"]["source_timestamp_ms"] == 12345 && images[1]["data"]["share_source_id"] == 900,
           "Keep source timestamps separate from sampled recording time");
+}
+
+void share_discovery_scans_participants_when_sharer_list_is_missing() {
+  for (bool null_list : {false, true}) for (bool valid_source : {true, false}) {
+    Backend sdk; backend = &sdk; Output output; ShareFrame frame;
+    sdk.meeting.share.begin(73, valid_source ? 901 : 0);
+    sdk.meeting.share.users.items.clear();
+    sdk.meeting.share.user_list_available = !null_list;
+    CaptureRuntime capture(output.root, "session");
+    {
+      ZoomSession session(config(), capture); admit(session, sdk);
+      require(sdk.meeting.share.source_queries == std::vector<uint32_t>({1, 42, 73}),
+              "Empty or null sharer lists must fall back to querying each participant");
+      require(sdk.raw.subscriptions == 1 && sdk.renderers == (valid_source ? 1 : 0),
+              "Fallback discovery must preserve audio and require an actual share source ID");
+      if (valid_source) {
+        require(sdk.renderer.source == 901, "Never substitute a participant ID for the SDK share source ID");
+        frame.source = 901;
+        sdk.renderer.delegate->onRawDataFrameReceived(&frame); frame.Release(); session.tick();
+        sdk.meeting.recording.listener->onRecordPrivilegeChanged(true); session.tick();
+        require(sdk.renderer.subscriptions == 1, "Repeated fallback discovery must keep the existing subscription");
+        sdk.meeting.share.sources.items.clear();
+        sdk.meeting.recording.listener->onRecordPrivilegeChanged(true); session.tick();
+        require(sdk.renderer.delegate == nullptr, "Missing fallback sources must clear old share pixels and subscriptions");
+      }
+      session.stop("test_stop");
+    }
+    capture.close();
+    require(!capture.failed(), "Fallback share discovery must not fail audio capture");
+    const auto discoveries = output.events("share.sources");
+    require(discoveries.size() == (valid_source ? 2 : 1) &&
+            discoveries.front()["data"]["lookup_method"] == "participants" &&
+            discoveries.front()["data"]["queried_user_count"] == 3,
+            "Record the fallback lookup method and suppress identical discovery events");
+    require(discoveries.front()["data"]["sharing_user_count"] == (null_list ? Json(nullptr) : Json(0)),
+            "Discovery events must distinguish an unavailable sharer list from an empty list");
+    const auto images = output.events("screenshot.saved");
+    require(images.size() == (valid_source ? 1 : 0), "Only a returned share source and raw frame may produce a JPEG");
+    if (valid_source) {
+      const auto path = output.root / images.front()["data"]["image_path"].get<std::string>();
+      FILE* file = fopen(path.c_str(), "rb");
+      require(file != nullptr, "Fallback capture must publish a real JPEG");
+      jpeg_decompress_struct decoder{}; jpeg_error_mgr error{};
+      decoder.err = jpeg_std_error(&error);
+      jpeg_create_decompress(&decoder); jpeg_stdio_src(&decoder, file); jpeg_read_header(&decoder, TRUE);
+      require(decoder.image_width == 640 && decoder.image_height == 360,
+              "Fallback raw frames must reach the existing 640x360 JPEG writer");
+      jpeg_destroy_decompress(&decoder); fclose(file);
+    }
+  }
 }
 
 void share_permission_reconnect_and_switching() {
@@ -695,7 +752,7 @@ void share_snapshots_preserve_pixels_and_every_frame_event() {
   capture.admitted(); capture.cloud_recording(0);
   {
     ShareCapture share(capture, 1);
-    sdk.meeting.share.begin(); share.refresh(&sdk.meeting.share);
+    sdk.meeting.share.begin(); share.refresh(&sdk.meeting.share, &sdk.meeting.participants);
     std::fill(frame.bytes.begin(), frame.bytes.begin() + 16, 16);
     for (int i = 0; i < 60; ++i) {
       ++frame.timestamp;
@@ -752,10 +809,11 @@ int main() {
     real_pcm_fixture_through_sdk_callbacks();
     cloud_status_and_renames_reach_the_capture_consumer();
     admission_refreshes_names_received_before_user_info();
+    share_discovery_scans_participants_when_sharer_list_is_missing();
     share_samples_static_frames_at_configured_intervals();
     share_permission_reconnect_and_switching();
     share_snapshots_preserve_pixels_and_every_frame_event();
-    std::cout << "23 SDK adapter scenarios passed (test doubles, no live meeting)\n";
+    std::cout << "27 SDK adapter scenarios passed (test doubles, no live meeting)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

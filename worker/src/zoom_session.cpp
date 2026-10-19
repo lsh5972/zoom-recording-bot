@@ -348,7 +348,7 @@ void ZoomSession::try_recording() {
     }
     return;
   }
-  if (subscribed_) { share_.refresh(meeting_->GetMeetingShareController()); return; }
+  if (subscribed_) { share_.refresh(meeting_->GetMeetingShareController(), participants_); return; }
   raw_ = GetAudioRawdataHelper();
   if (!raw_) throw std::runtime_error("SDK raw audio helper unavailable");
   snapshot_participants();
@@ -361,7 +361,7 @@ void ZoomSession::try_recording() {
   const auto subscribed = raw_->subscribe(this, false);
   if (subscribed != SDKERR_SUCCESS) { receiving_ = false; check(subscribed, "subscribe_one_way_audio"); }
   subscribed_ = true;
-  share_.refresh(meeting_->GetMeetingShareController());
+  share_.refresh(meeting_->GetMeetingShareController(), participants_);
   capture_.event("sdk.event_coverage", {{"interface", "IZoomSDKAudioRawDataDelegate"}, {"registered", true},
                                        {"callbacks", {"onMixedAudioRawDataReceived", "onOneWayAudioRawDataReceived",
                                                       "onShareAudioRawDataReceived", "onOneWayInterpreterAudioRawDataReceived"}}});
