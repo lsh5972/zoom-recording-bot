@@ -1,0 +1,27 @@
+README.md
+  s_94b8728166fbc7::t_e4ff773c9ec808 38,41
+worker/include/zoom_bot/share_capture.hpp
+  s_94b8728166fbc7::t_206ed163da4770 13
+worker/src/share_capture.cpp
+  s_94b8728166fbc7::t_85d431b788a940 74,76,93-95,99
+worker/src/zoom_session.cpp
+  s_94b8728166fbc7::t_49d0663e91990f 351,364
+worker/tests/sdk_tests.cpp
+  s_94b8728166fbc7::t_4a4124fcc0d4c6 127-128,635,698,758
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "36fc646cf4dcbeb1122370cdc2068185e107895e",
+  "prompts": {},
+  "sessions": {
+    "s_94b8728166fbc7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0f0d4-b78d-73d3-ad32-f8b29da885c8",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Soohyeon Lee <soohyeon.lee@privatenote.co.kr>"
+    }
+  }
+}
