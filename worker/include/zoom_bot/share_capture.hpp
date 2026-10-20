@@ -35,7 +35,6 @@ class ShareCapture final : public ZOOMSDK::IZoomSDKRendererDelegate {
   int64_t next_ms_ = 0;
   std::optional<ScreenshotFrame> latest_;
   std::shared_ptr<std::vector<unsigned char>> pixels_;
-  nlohmann::json previous_sources_;
 #ifdef ZOOM_SHARE_DIAGNOSTICS
   uint64_t frame_callbacks_ = 0;
 #endif

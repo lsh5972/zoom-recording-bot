@@ -17,12 +17,12 @@ std::string clock_label(int64_t milliseconds) {
 }  // namespace
 AudioSegmenter::AudioSegmenter(std::string participant_session_id, std::string display_name,
                                uint32_t user_id, int rate, int channels,
-                               EventJournal& events, WavWriter& wav,
+                               EventJournal& chunks, WavWriter& wav,
                                RecordingTimeline& recordings,
                                uint64_t& utterance_number, uint64_t& chunk_number)
     : participant_id_(std::move(participant_session_id)), display_name_(std::move(display_name)),
       user_id_(user_id), rate_(rate),
-      channels_(channels), events_(events), wav_(wav),
+      channels_(channels), chunks_(chunks), wav_(wav),
       recordings_(recordings),
       utterance_number_(utterance_number), chunk_number_(chunk_number) {}
 
@@ -57,13 +57,6 @@ void AudioSegmenter::consume(AudioFrame frame, bool voiced) {
       utterance_id_ = participant_id_ + "-utterance-" + std::to_string(++utterance_number_);
       chunk_.assign(pre_roll_.begin(), pre_roll_.end());
       pre_roll_.clear();
-      auto event = identity();
-      event.update(recording_identity(frame.start_ms));
-      event["speech_start_ms"] = event["recording_time_ms"];
-      event["capture_speech_start_ms"] = frame.start_ms;
-      event["speech_start_unix_ms"] = recordings_.wall_ms(frame.start_ms);
-      event["detector"] = "webrtc-vad";
-      events_.append("speech_on", frame.start_ms, std::move(event));
     }
   }
   if (speaking_) {
@@ -86,19 +79,10 @@ void AudioSegmenter::consume(AudioFrame frame, bool voiced) {
   if (pre_roll_.size() > 20) pre_roll_.pop_front();
 }
 
-void AudioSegmenter::finish(const std::string& reason, int64_t detected_ms) {
+void AudioSegmenter::finish(const std::string& reason, int64_t) {
   if (speaking_) {
     // Overlap alone after a forced cut must not become a duplicate-only chunk.
     if (chunk_.size() > static_cast<size_t>(overlap_ms_ / 10)) publish(reason);
-    auto event = identity();
-    event.update(recording_identity(last_voice_end_ms_ - 1));
-    if (!event["recording_time_ms"].is_null())
-      event["recording_time_ms"] = event["recording_time_ms"].get<int64_t>() + 1;
-    event["speech_end_ms"] = event["recording_time_ms"];
-    event["capture_speech_end_ms"] = last_voice_end_ms_;
-    event["speech_end_unix_ms"] = recordings_.wall_ms(last_voice_end_ms_);
-    event["reason"] = reason;
-    events_.append("speech_off", detected_ms < 0 ? end_ms_ : detected_ms, std::move(event));
   }
   speaking_ = false;
   overlap_ms_ = 0;
@@ -143,7 +127,7 @@ void AudioSegmenter::publish(const std::string& reason, int64_t limit_ms) {
     metadata.erase("recording_time_ms");
     const auto number = ++chunk_number_;
     const auto file_number = wav_.next_sequence();
-    const auto id = events_.session_id() + "-" + participant_id_ + "-chunk-" + std::to_string(number);
+    const auto id = chunks_.session_id() + "-" + participant_id_ + "-chunk-" + std::to_string(number);
     const auto start_ms = span.offset_ms + start - span.start_ms;
     const auto end_ms = span.offset_ms + end - span.start_ms;
     const auto label = WavWriter::speaker_label(display_name_);
@@ -159,8 +143,8 @@ void AudioSegmenter::publish(const std::string& reason, int64_t limit_ms) {
                      {"overlap_ms", overlap}, {"cut_reason", reason}, {"sample_rate", rate_}, {"channels", channels_},
                      {"sample_format", "pcm_s16le"}, {"sample_frames", samples.size() / channels_},
                      {"wav_path", wav_.write(relative, rate_, channels_, samples)}});
-    events_.append("audio.chunk_ready", end, std::move(metadata));
-    events_.sync();
+    chunks_.append("audio.chunk_ready", end, std::move(metadata));
+    chunks_.sync();
   }
   chunk_.clear();
   overlap_ms_ = 0;

@@ -5,14 +5,14 @@
 #include <stdexcept>
 
 namespace zoom_bot {
-AudioPipeline::AudioPipeline(EventJournal& events, WavWriter& wav, RecordingTimeline& recordings)
-    : events_(events), wav_(wav), recordings_(recordings) {}
+AudioPipeline::AudioPipeline(EventJournal& chunks, WavWriter& wav, RecordingTimeline& recordings)
+    : chunks_(chunks), wav_(wav), recordings_(recordings) {}
 
 AudioPipeline::Stream::Stream(const std::string& participant_id, const std::string& display_name, const PcmPacket& packet,
-                             EventJournal& events, WavWriter& wav, RecordingTimeline& recordings,
+                             EventJournal& chunks, WavWriter& wav, RecordingTimeline& recordings,
                              uint64_t& utterance_number, uint64_t& chunk_number)
     : rate(packet.rate), channels(packet.channels), origin_ms(packet.start_ms), buffer_ms(packet.start_ms),
-      detector(rate), segmenter(participant_id, display_name, packet.user_id, rate, channels, events, wav, recordings,
+      detector(rate), segmenter(participant_id, display_name, packet.user_id, rate, channels, chunks, wav, recordings,
                                 utterance_number, chunk_number) {}
 
 int64_t AudioPipeline::Stream::expected_ms() const {
@@ -42,17 +42,13 @@ void AudioPipeline::joined(uint32_t user_id, const std::string& display_name, in
   if (participants_.count(user_id)) left(user_id, at_ms);
   const auto id = "user-" + std::to_string(user_id) + "-join-" + std::to_string(++generations_[user_id]);
   participants_.emplace(user_id, Participant{id, display_name, 0, 0, nullptr});
-  events_.append("participant.joined", at_ms,
-                 {{"user_id", user_id}, {"participant_session_id", id}, {"display_name", display_name}});
 }
 
-void AudioPipeline::renamed(uint32_t user_id, const std::string& display_name, int64_t at_ms) {
+void AudioPipeline::renamed(uint32_t user_id, const std::string& display_name, int64_t) {
   auto found = participants_.find(user_id);
   if (found == participants_.end() || found->second.display_name == display_name) return;
   found->second.display_name = display_name;
   if (found->second.stream) found->second.stream->segmenter.renamed(display_name);
-  events_.append("participant.renamed", at_ms,
-                 {{"user_id", user_id}, {"participant_session_id", found->second.id}, {"display_name", display_name}});
 }
 
 void AudioPipeline::left(uint32_t user_id, int64_t at_ms) {
@@ -62,8 +58,6 @@ void AudioPipeline::left(uint32_t user_id, int64_t at_ms) {
     found->second.stream->drain();
     found->second.stream->segmenter.finish("participant_left", at_ms);
   }
-  events_.append("participant.left", at_ms,
-                 {{"user_id", user_id}, {"participant_session_id", found->second.id}});
   participants_.erase(found);
 }
 
@@ -72,10 +66,7 @@ void AudioPipeline::consume(PcmPacket packet) {
       packet.samples.size() % packet.channels != 0 ||
       (packet.rate != 8000 && packet.rate != 16000 && packet.rate != 32000 && packet.rate != 48000))
     throw std::invalid_argument("Unsupported or malformed PCM packet");
-  if (!participants_.count(packet.user_id)) {
-    joined(packet.user_id, "", packet.start_ms);
-    events_.append("participant.discovered_from_audio", packet.start_ms, {{"user_id", packet.user_id}});
-  }
+  if (!participants_.count(packet.user_id)) joined(packet.user_id, "", packet.start_ms);
   auto& participant = participants_.at(packet.user_id);
   if (participant.stream && (participant.stream->rate != packet.rate || participant.stream->channels != packet.channels)) {
     participant.stream->drain();
@@ -83,25 +74,17 @@ void AudioPipeline::consume(PcmPacket packet) {
     participant.stream.reset();
   }
   if (!participant.stream) {
-    participant.stream = std::make_unique<Stream>(participant.id, participant.display_name, packet, events_, wav_, recordings_,
+    participant.stream = std::make_unique<Stream>(participant.id, participant.display_name, packet, chunks_, wav_, recordings_,
                                                 participant.utterance_number, participant.chunk_number);
-    events_.append("audio.format", packet.start_ms,
-                   {{"participant_session_id", participant.id}, {"user_id", packet.user_id},
-                    {"sample_rate", packet.rate}, {"channels", packet.channels}});
   }
   auto& stream = *participant.stream;
   const auto expected = stream.expected_ms();
   if (std::llabs(packet.start_ms - expected) > 1) {
     if (packet.start_ms < expected) {
-      events_.append("audio.out_of_order", packet.start_ms,
-                     {{"user_id", packet.user_id}, {"expected_ms", expected}});
       throw std::runtime_error("PCM timestamp moved backwards");
     }
     stream.drain();
     stream.segmenter.finish("audio_gap");
-    events_.append("audio.gap", packet.start_ms,
-                   {{"user_id", packet.user_id}, {"participant_session_id", participant.id},
-                    {"start_ms", expected}, {"end_ms", packet.start_ms}});
     stream.reset(packet.start_ms);
   } else if (stream.idle) {
     stream.reset(packet.start_ms);
@@ -149,7 +132,6 @@ void AudioPipeline::pause(const std::string& reason, int64_t at_ms) {
       participant.stream.reset();
     }
   }
-  events_.append("capture.stopped", at_ms, {{"reason", reason}});
 }
 
 void AudioPipeline::recording_changed(const std::string& reason, int64_t at_ms) {

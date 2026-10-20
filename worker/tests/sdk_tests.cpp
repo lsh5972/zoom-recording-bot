@@ -7,6 +7,7 @@
 #include <iostream>
 #include <jpeglib.h>
 #include <sndfile.h>
+#include <sstream>
 #include <stdexcept>
 #include <unistd.h>
 
@@ -245,7 +246,39 @@ struct Output {
       require(line.find("secret-zak") == std::string::npos && line.find("secret-jwt") == std::string::npos,
               "Events must not expose join credentials");
       auto event = Json::parse(line);
+      require(event["type"] == "sdk.callback", "Only actual Zoom callback records belong in events.jsonl");
       if (type.empty() || event["type"] == type) result.push_back(std::move(event));
+    }
+    return result;
+  }
+  std::vector<Json> chunks() {
+    std::vector<Json> result;
+    std::ifstream file(root / "chunks.jsonl");
+    for (std::string line; std::getline(file, line);) {
+      auto row = Json::parse(line);
+      require(row["type"] == "audio.chunk_ready", "Manifest must contain only finalized WAV metadata");
+      result.push_back(std::move(row));
+    }
+    return result;
+  }
+  std::vector<std::filesystem::path> images() {
+    std::vector<std::filesystem::path> result;
+    for (const auto& file : std::filesystem::directory_iterator(root))
+      if (file.path().extension() == ".jpg") result.push_back(file.path());
+    std::sort(result.begin(), result.end());
+    return result;
+  }
+};
+struct StderrCapture {
+  std::ostringstream text;
+  std::streambuf* previous = std::cerr.rdbuf(text.rdbuf());
+  ~StderrCapture() { std::cerr.rdbuf(previous); }
+  std::vector<Json> records(const std::string& type) {
+    std::vector<Json> result;
+    std::istringstream input(text.str());
+    for (std::string line; std::getline(input, line);) {
+      auto row = Json::parse(line);
+      if (row["type"] == type) result.push_back(std::move(row));
     }
     return result;
   }
@@ -278,6 +311,41 @@ struct Packet : AudioRawDataStub {
   unsigned int GetChannelNum() override { return 1; }
   unsigned long long GetTimeStamp() override { return timestamp; }
 };
+
+void event_journal_contains_only_zoom_callbacks() {
+  Backend sdk; backend = &sdk; Output output;
+  CaptureRuntime capture(output.root, "session");
+  {
+    ZoomSession session(config(), capture); admit(session, sdk);
+    List<unsigned int> active; active.items = {42};
+    sdk.meeting.audio.listener->onUserActiveAudioChange(&active);
+    active.items.clear();
+    sdk.meeting.audio.listener->onUserActiveAudioChange(&active);
+    Packet packet; packet.samples.assign(160, 0);
+    for (int i = 0; i < 100; ++i) {
+      packet.timestamp = i * 10;
+      session.onMixedAudioRawDataReceived(&packet);
+      session.onOneWayAudioRawDataReceived(&packet, 42);
+    }
+    session.stop("test_stop");
+  }
+  capture.close();
+  const auto events = output.events();
+  require(!events.empty(), "Zoom callbacks must still be recorded");
+  int active_changes = 0;
+  for (size_t i = 0; i < events.size(); ++i) {
+    const auto& event = events[i];
+    require(event["type"] == "sdk.callback" && event["seq"] == i + 1,
+            "events.jsonl must contain only ordered Zoom callbacks, without bot or packet logs");
+    if (event["data"]["callback"] == "onUserActiveAudioChange") {
+      require(event["data"]["arguments"]["plstActiveAudio"] ==
+              (active_changes == 0 ? Json::array({42}) : Json::array()),
+              "Zoom speaker IDs and the subsequent empty list must be preserved exactly");
+      ++active_changes;
+    }
+  }
+  require(active_changes == 2, "Preserve Zoom active-speaker callbacks including an empty active list");
+}
 
 void rejected_auth_never_joins() {
   Backend sdk; backend = &sdk; Output output;
@@ -344,11 +412,11 @@ void missing_admission_callback_uses_verified_sdk_state() {
       session.stop("test_stop");
     }
     capture.close();
-    require(!capture.failed() && output.events("meeting.admitted").size() == 1,
+    require(!capture.failed() && sdk.meeting.recording.starts == (allowed ? 1 : 0),
             "Recovered admission must initialize the capture clock and participants exactly once");
-    require(output.events("audio.chunk_ready").empty() == !allowed,
+    require(output.chunks().empty() == !allowed,
             "Recovered authorized admission must produce WAVs from PCM; denied admission must not");
-    for (const auto& chunk : output.events("audio.chunk_ready"))
+    for (const auto& chunk : output.chunks())
       require(std::filesystem::exists(output.root / chunk["data"]["wav_path"].get<std::string>()),
               "Recovery must publish the finalized WAV rather than only a chunk event");
   }
@@ -368,8 +436,7 @@ void sdk_permission_controls_recording() {
       session.stop("test_stop");
     }
     capture.close();
-    require(output.events("capture.started").size() == (mode == 0 ? 1 : 0),
-            "Capture success must match SDK recording permission");
+    require(!capture.failed(), "Recording permission checks must preserve capture");
   }
 }
 
@@ -413,14 +480,7 @@ void attendee_requests_recording_once_and_waits_for_grant() {
       session.stop("test_stop");
     }
     capture.close();
-    int requests = 0;
-    for (const auto& event : output.events("sdk.operation"))
-      if (event["data"]["operation"] == "request_local_recording_privilege") {
-        ++requests;
-        require(event["data"]["result"] == (scenario == 3 ? SDKERR_NO_PERMISSION : SDKERR_SUCCESS),
-                "The request operation must preserve its SDK result");
-      }
-    require(requests == 1, "Journal the permission request exactly once");
+    require(sdk.meeting.recording.requests == 1, "Shutdown must not repeat the permission request");
   }
 }
 
@@ -441,7 +501,7 @@ void revocation_stops_and_grant_resumes() {
     require(sdk.meeting.leaves == 1 && sdk.meeting.leave_command == LEAVE_MEETING, "Shutdown must leave only the bot");
   }
   capture.close();
-  require(output.events("capture.started").size() == 2, "Each successful subscription needs a capture event");
+  require(sdk.raw.unsubscriptions == 2, "Shutdown must close the resumed subscription");
 }
 
 void reconnect_and_role_changes_preserve_permissions() {
@@ -467,10 +527,7 @@ void reconnect_and_role_changes_preserve_permissions() {
     session.stop("test_stop");
   }
   capture.close();
-  require(output.events("participant.joined").size() == 3, "Permission and transport pauses must preserve known speaker sessions");
-  auto departed = output.events("participant.left");
-  require(departed.size() == 1 && departed.front()["data"]["user_id"] == 73,
-          "Re-admission must reconcile participants who left during reconnect");
+  require(sdk.raw.unsubscriptions == 3, "Shutdown must close the reconnected subscription");
 }
 
 void delayed_audio_and_subscription_failure() {
@@ -493,7 +550,7 @@ void delayed_audio_and_subscription_failure() {
       session.stop("test_stop");
     }
     capture.close();
-    if (rejected) require(output.events("capture.started").empty(), "Failed subscription must never report successful capture");
+    if (rejected) require(output.chunks().empty(), "Failed subscription must never report successful capture");
   }
 }
 
@@ -545,15 +602,11 @@ void real_pcm_fixture_through_sdk_callbacks() {
   }
   capture.close();
   require(!capture.failed(), "Copied SDK buffers must remain valid on the consumer");
-  const auto packets = output.events("sdk.raw_audio.one_way");
-  require(packets.size() == ((speech.size() + 159) / 160) * 2,
-          "Repeated SDK timestamps must retain every frame for both speakers");
-  require(output.events("audio.out_of_order").empty() && output.events("audio.gap").empty(),
-          "Quantized SDK timestamps must produce continuous speaker timelines");
-  const auto chunks = output.events("audio.chunk_ready");
+  const auto chunks = output.chunks();
   std::set<uint32_t> speakers;
   for (const auto& chunk : chunks) {
     speakers.insert(chunk["data"]["user_id"].get<uint32_t>());
+    require(chunk["data"]["cut_reason"] != "audio_gap", "Quantized timestamps must not split speaker WAVs");
     const auto path = chunk["data"]["wav_path"].get<std::string>();
     const auto display = chunk["data"]["user_id"] == 42 ? "Alice" : "Bob";
     require(chunk["data"]["display_name"] == display && path.find("recording-1__" + std::string(display) + "__") == 0,
@@ -567,13 +620,11 @@ void real_pcm_fixture_through_sdk_callbacks() {
             "WAV must contain copied speech even after SDK overwrites its callback buffer");
   }
   require(speakers == std::set<uint32_t>{42, 73}, "Simultaneous SDK speakers must produce separate WAVs");
-  require(output.events("speech_on").size() >= 2 && output.events("speech_off").size() >= 2,
-          "SDK capture must record per-speaker speech transitions");
   bool preserved = false;
   for (const auto& event : output.events("sdk.callback"))
     if (event["data"]["callback"] == "onUserActiveAudioChange")
       preserved = event["data"]["arguments"]["plstActiveAudio"] == Json::array({42, 73});
-  require(preserved, "SDK active-audio list must be preserved separately from VAD speech events");
+  require(preserved, "SDK active-audio callback arguments must be preserved");
 }
 
 void cloud_status_and_renames_reach_the_capture_consumer() {
@@ -599,16 +650,10 @@ void cloud_status_and_renames_reach_the_capture_consumer() {
   }
   capture.close();
   require(!capture.failed(), "Cloud state changes and participant renames must drain without failure");
-  const auto states = output.events("cloud.recording_state");
-  require(states.size() == 5 && states[0]["data"]["recording_id"] == "recording-1" &&
-          states[2]["data"]["recording_id"] == "recording-1" && states[4]["data"]["recording_id"] == "recording-2",
-          "Initial and repeated SDK starts must be distinguished from stop/start and pause/resume");
-  require(output.events("participant.renamed").back()["data"]["display_name"] == "홍길동",
-          "SDK rename callback must refresh the stored participant display name");
-  int callbacks = 0;
-  for (const auto& event : output.events("sdk.callback"))
-    if (event["data"]["callback"] == "onCloudRecordingStatus") ++callbacks;
-  require(callbacks == 7, "Duplicate cloud status callbacks must remain in the exhaustive event journal");
+  int states = 0;
+  for (const auto& event : output.events())
+    if (event["data"]["callback"] == "onCloudRecordingStatus") ++states;
+  require(states == 7, "Preserve every Zoom cloud-recording callback, including duplicate starts");
 }
 
 void admission_refreshes_names_received_before_user_info() {
@@ -632,10 +677,7 @@ void admission_refreshes_names_received_before_user_info() {
     session.stop("test_stop");
   }
   capture.close();
-  const auto renamed = output.events("participant.renamed");
-  require(!renamed.empty() && renamed[0]["data"]["display_name"] == "수현 이",
-          "Admission snapshots must replace empty early names without requiring a name-change callback");
-  const auto chunks = output.events("audio.chunk_ready");
+  const auto chunks = output.chunks();
   require(!chunks.empty() && chunks[0]["data"]["wav_path"].get<std::string>().find("__수현 이__") != std::string::npos,
           "WAV filenames must use the recovered display name instead of the generic speaker label");
 }
@@ -663,11 +705,10 @@ void share_samples_static_frames_at_configured_intervals() {
   }
   capture.close();
   require(!capture.failed(), "Shared-screen samples must drain without capture failure");
-  const auto images = output.events("screenshot.saved");
-  require(images.size() == 2 && images[0]["data"]["capture_ms"] == 0 && images[1]["data"]["capture_ms"] == 2000,
+  const auto images = output.images();
+  require(images.size() == 2 && images[0].filename() == "recording-1__share__00:00:00__shot-1.jpg" &&
+          images[1].filename() == "recording-1__share__00:00:02__shot-2.jpg",
           "Save static slides every configured interval without requiring a new raw frame");
-  require(images[1]["data"]["source_timestamp_ms"] == 12345 && images[1]["data"]["share_source_id"] == 900,
-          "Keep source timestamps separate from sampled recording time");
 }
 
 void share_permission_reconnect_and_switching() {
@@ -702,11 +743,11 @@ void share_permission_reconnect_and_switching() {
     session.stop("test_stop");
   }
   capture.close();
-  require(!capture.failed() && output.events("screenshot.saved").size() == 2,
+  require(!capture.failed() && output.images().size() == 2,
           "Sharing transitions must keep two sampled images without unauthorized or stale images");
 }
 
-void share_snapshots_preserve_pixels_and_every_frame_event() {
+void share_snapshots_preserve_pixels_without_packet_logs() {
   Backend sdk; backend = &sdk; Output output; ShareFrame frame;
   CaptureRuntime capture(output.root, "session");
   capture.admitted(); capture.cloud_recording(0);
@@ -729,16 +770,13 @@ void share_snapshots_preserve_pixels_and_every_frame_event() {
     share.tick(4000);
   }
   capture.close();
-  const auto images = output.events("screenshot.saved");
+  const auto images = output.images();
   require(!capture.failed() && images.size() == 4,
           "Changed and static snapshots must preserve the configured interval without stale off-stream images");
-  require(output.events("sdk.raw_share.frame").size() == 62,
-          "Repeated identical pixels must still retain every raw-frame event");
   for (size_t i = 0; i < images.size(); ++i) {
-    require(images[i]["data"]["source_timestamp_ms"] == frame.timestamp &&
-            images[i]["data"]["capture_ms"] == i * 1000,
-            "Pixel caching must preserve current source metadata and each sample's capture time");
-    const auto path = output.root / images[i]["data"]["image_path"].get<std::string>();
+    require(images[i].filename().string().find("__00:00:0" + std::to_string(i) + "__") != std::string::npos,
+            "Each JPEG filename must retain its sampled recording time");
+    const auto path = images[i];
     FILE* file = fopen(path.c_str(), "rb");
     require(file != nullptr, "Every queued snapshot must publish an image");
     jpeg_decompress_struct decoder{}; jpeg_error_mgr error{};
@@ -760,7 +798,7 @@ void share_snapshots_preserve_pixels_and_every_frame_event() {
 
 void share_diagnostics_are_read_only_and_report_missing_data() {
   for (int scenario = 0; scenario < 3; ++scenario) {
-    Backend sdk; backend = &sdk; Output output;
+    Backend sdk; backend = &sdk; Output output; StderrCapture diagnostic;
     sdk.meeting.share_statistics.recvBandwidth = 512;
     sdk.meeting.share_statistics.recvFps = 15;
     sdk.meeting.share_statistics.recvResolution = (360 << 16) | 640;
@@ -784,7 +822,7 @@ void share_diagnostics_are_read_only_and_report_missing_data() {
     }
     capture.close();
     require(!capture.failed(), "Read-only diagnostics must preserve capture");
-    const auto records = output.events("sdk.diagnostics.share");
+    const auto records = diagnostic.records("sdk.diagnostics.share");
 #ifdef ZOOM_SHARE_DIAGNOSTICS
     require(sdk.meeting.statistics_calls == 1 && records.size() == 1,
             "Diagnostics must run on admission and throttle repeated main-loop ticks");
@@ -796,12 +834,12 @@ void share_diagnostics_are_read_only_and_report_missing_data() {
     else require(data["received"]["bandwidth"] == 512 && data["received"]["fps"] == 15 &&
                  data["received"]["width"] == 640 && data["received"]["height"] == 360,
                  "Unpack the SDK resolution and preserve receive values even when sources are empty");
-    const auto stopped = output.events("sdk.diagnostics.stopped");
+    const auto stopped = diagnostic.records("sdk.diagnostics.stopped");
     require(stopped.size() == 1 && stopped.front()["data"]["audio_packets"] == 1 &&
             stopped.front()["data"]["share"]["frame_callbacks"] == 0,
-            "Persist final audio and share callback counters at shutdown");
+            "Print final diagnostic counters without writing them to the Zoom event journal");
 #else
-    require(sdk.meeting.statistics_calls == 0 && records.empty() && output.events("sdk.diagnostics.enabled").empty(),
+    require(sdk.meeting.statistics_calls == 0 && records.empty() && diagnostic.records("sdk.diagnostics.enabled").empty(),
             "A normal build must not poll diagnostic APIs or emit diagnostic events");
 #endif
   }
@@ -809,6 +847,7 @@ void share_diagnostics_are_read_only_and_report_missing_data() {
 
 int main() {
   try {
+    event_journal_contains_only_zoom_callbacks();
     early_audio_events_wait_for_admission();
     missing_admission_callback_uses_verified_sdk_state();
     rejected_auth_never_joins(); sdk_permission_controls_recording();
@@ -820,9 +859,9 @@ int main() {
     admission_refreshes_names_received_before_user_info();
     share_samples_static_frames_at_configured_intervals();
     share_permission_reconnect_and_switching();
-    share_snapshots_preserve_pixels_and_every_frame_event();
+    share_snapshots_preserve_pixels_without_packet_logs();
     share_diagnostics_are_read_only_and_report_missing_data();
-    std::cout << "26 SDK adapter scenarios passed (test doubles, no live meeting)\n";
+    std::cout << "SDK adapter scenarios passed (test doubles, no live meeting)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

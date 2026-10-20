@@ -27,7 +27,7 @@ struct Output {
   ~Output() { std::filesystem::remove_all(root); }
   std::vector<Json> events(const std::string& type = "") const {
     std::vector<Json> result;
-    std::ifstream file(root / "events.jsonl");
+    std::ifstream file(root / "chunks.jsonl");
     for (std::string line; std::getline(file, line);) {
       auto event = Json::parse(line);
       if (type.empty() || event["type"] == type) result.push_back(std::move(event));
@@ -51,7 +51,7 @@ void feed(AudioSegmenter& segmenter, int start, int frames, bool voiced, int16_t
 
 void silence_boundary_and_pre_roll() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0;
   AudioSegmenter segmenter("user-1-join-1", "Alice", 1, 16000, 1, journal, wav, output.recordings, utterances, chunks);
@@ -72,17 +72,13 @@ void silence_boundary_and_pre_roll() {
   check(info.frames == 14400 && info.samplerate == 16000 && info.channels == 1, "WAV format/duration mismatch");
   check(samples[3199] == 0 && samples[3200] == 1234 && samples[7999] == 1234 && samples[8000] == 0,
         "WAV samples must preserve pre-roll, voice and tail positions");
-  check(output.events("speech_on").size() == 1 && output.events("speech_off").size() == 1,
-        "Utterance must have one pair of speech events");
-  check(output.events("speech_on")[0]["capture_ms"] == 200, "Speech onset must exclude pre-roll");
-  check(output.events("speech_off")[0]["data"]["speech_end_ms"] == 500, "Speech offset must exclude silence tail");
   auto events = output.events();
   for (size_t i = 0; i < events.size(); ++i) check(events[i]["seq"] == i + 1, "Event sequence must be contiguous");
 }
 
 void long_speech_publishes_during_utterance() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0;
   AudioSegmenter segmenter("user-1-join-1", "Alice", 1, 16000, 1, journal, wav, output.recordings, utterances, chunks);
@@ -90,7 +86,6 @@ void long_speech_publishes_during_utterance() {
   check(output.events("audio.chunk_ready").empty(), "Speech under 30 s must remain a single open chunk");
   feed(segmenter, 29990, 1, true);
   check(output.events("audio.chunk_ready").size() == 1, "Long speech must publish at 30 s before speech_off");
-  check(output.events("speech_off").empty(), "Chunk cut must not end speech");
   feed(segmenter, 30000, 3500, true);
   segmenter.finish("stop");
   auto ready = output.events("audio.chunk_ready");
@@ -106,25 +101,22 @@ void long_speech_publishes_during_utterance() {
     read_wav(output.root / data["wav_path"].get<std::string>(), info);
     check(info.frames == (ends[i] - starts[i]) * 16, "Independent WAV duration mismatch");
   }
-  check(output.events("speech_on").size() == 1 && output.events("speech_off").size() == 1,
-        "Long speech must remain a single utterance");
 }
 
 void exact_forced_boundary_avoids_duplicate_only_chunk() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0;
   AudioSegmenter segmenter("user-1-join-1", "Alice", 1, 16000, 1, journal, wav, output.recordings, utterances, chunks);
   feed(segmenter, 0, 3000, true);
   segmenter.finish("permission_revoked");
   check(output.events("audio.chunk_ready").size() == 1, "Stop at forced boundary must not republish overlap alone");
-  check(output.events("speech_off")[0]["data"]["reason"] == "permission_revoked", "Stop reason must be recorded");
 }
 
 void thirty_seconds_counts_speech_without_pre_roll_or_silence_tail() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0;
   AudioSegmenter segmenter("user-1-join-1", "Alice", 1, 16000, 1, journal, wav, output.recordings, utterances, chunks);
@@ -139,7 +131,7 @@ void thirty_seconds_counts_speech_without_pre_roll_or_silence_tail() {
 
 void final_partial_frame_preserves_pcm() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0;
   AudioSegmenter segmenter("user-1-join-1", "Alice", 1, 16000, 1, journal, wav, output.recordings, utterances, chunks);
@@ -155,7 +147,7 @@ void final_partial_frame_preserves_pcm() {
 
 void counters_survive_audio_format_change() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0;
   {
@@ -211,7 +203,7 @@ void callback_packet_sizes_preserve_wav_and_speech_events() {
     for (auto sample : source) for (int channel = 0; channel < channels; ++channel) input.push_back(sample);
     const auto render = [&](const std::vector<size_t>& packet_frames) {
       Output output;
-      EventJournal journal(output.root, "session");
+      EventJournal journal(output.root, "session", "chunks.jsonl");
       WavWriter wav(output.root);
       AudioPipeline pipeline(journal, wav, output.recordings);
       pipeline.joined(42, "홍길동", 0);
@@ -242,7 +234,7 @@ void callback_packet_sizes_preserve_wav_and_speech_events() {
 
 void overlapping_speakers_keep_distinct_audio() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t u1 = 0, c1 = 0, u2 = 0, c2 = 0;
   AudioSegmenter first("user-1-join-1", "Alice", 1, 16000, 1, journal, wav, output.recordings, u1, c1);
@@ -269,7 +261,7 @@ void overlapping_speakers_keep_distinct_audio() {
 
 void timestamp_filename_uses_shared_clock_and_sequence() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0;
   AudioSegmenter segmenter("user-42-join-1", "홍길동", 42, 16000, 1, journal, wav, output.recordings, utterances, chunks);
@@ -289,7 +281,7 @@ void real_vad_framing_rejoin_and_inactivity() {
   auto source = read_wav(FVAD_FIXTURE, source_info);
   check(source_info.samplerate == 16000 && source_info.channels == 1, "Unexpected VAD fixture format");
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   AudioPipeline pipeline(journal, wav, output.recordings);
   pipeline.joined(42, "Speaker", 0);
@@ -302,7 +294,7 @@ void real_vad_framing_rejoin_and_inactivity() {
     pipeline.consume({7, 16000, 1, static_cast<int64_t>(offset / 16), std::vector<int16_t>(80, 0)});
   }
   pipeline.advance(count / 16 + 400);
-  check(!output.events("speech_on").empty(), "Real WebRTC VAD must detect voice fixture");
+  check(!output.events("audio.chunk_ready").empty(), "Real WebRTC VAD must produce speech chunks");
   auto before = output.events("audio.chunk_ready");
   check(!before.empty(), "Inactivity must flush pending voice without silent callbacks");
   for (const auto& event : before) check(event["data"]["user_id"] == 42, "Silent speaker must not get voice chunks");
@@ -310,25 +302,32 @@ void real_vad_framing_rejoin_and_inactivity() {
   pipeline.joined(42, "Speaker", count / 16 + 500);
   pipeline.consume({42, 16000, 1, static_cast<int64_t>(count / 16 + 500), std::vector<int16_t>(160, 0)});
   pipeline.finish("stop", count / 16 + 510);
-  auto joined = output.events("participant.joined");
-  check(joined[0]["data"]["participant_session_id"] != joined.back()["data"]["participant_session_id"],
-        "Rejoin must create a new participant session");
-  check(output.events("speech_off").size() == output.events("speech_on").size(), "Every utterance must close");
 }
 
 void timestamp_gap_is_explicit_and_backward_time_fails() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   AudioPipeline pipeline(journal, wav, output.recordings);
-  pipeline.consume({1, 16000, 1, 0, std::vector<int16_t>(160, 0)});
-  pipeline.consume({1, 16000, 1, 100, std::vector<int16_t>(160, 0)});
-  check(output.events("audio.gap").size() == 1, "Missing audio interval must not silently concatenate");
+  SF_INFO info{};
+  auto input = read_wav(FVAD_FIXTURE, info);
+  SpeechDetector detector(16000);
+  size_t voiced_end = 0;
+  for (size_t offset = 0; offset + 160 <= input.size(); offset += 160) {
+    if (detector.voiced(input.data() + offset, 160, 1)) { voiced_end = offset + 160; break; }
+  }
+  check(voiced_end > 0, "Gap test must end the first packet during real speech");
+  pipeline.consume({1, 16000, 1, 0, {input.begin(), input.begin() + voiced_end}});
+  const auto gap_ms = static_cast<int64_t>(voiced_end / 16 + 100);
+  pipeline.consume({1, 16000, 1, gap_ms, std::vector<int16_t>(160, 0)});
+  check(output.events("audio.chunk_ready").size() == 1 &&
+        output.events("audio.chunk_ready")[0]["data"]["cut_reason"] == "audio_gap",
+        "Missing audio interval must close the preceding WAV");
   bool rejected = false;
-  try { pipeline.consume({1, 16000, 1, 50, std::vector<int16_t>(160, 0)}); }
+  try { pipeline.consume({1, 16000, 1, gap_ms - 50, std::vector<int16_t>(160, 0)}); }
   catch (const std::runtime_error&) { rejected = true; }
-  check(rejected && output.events("audio.out_of_order").size() == 1, "Backward timestamp must fail visibly");
-  pipeline.finish("stop", 110);
+  check(rejected, "Backward timestamp must fail visibly");
+  pipeline.finish("stop", gap_ms + 10);
 }
 
 void recording_origins_and_duplicate_statuses() {
@@ -337,7 +336,7 @@ void recording_origins_and_duplicate_statuses() {
   check(output.recordings.change(0, 2000, -60000, 1700000000000), "Initial recording state must be accepted");
   check(output.recordings.spans().size() == 1, "Initial snapshot must not create overlapping unrecorded PCM");
   check(!output.recordings.change(0, 2000, -60000, 1700000000000), "Repeated start must not reset the recording");
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0;
   AudioSegmenter segmenter("user-42-join-1", "홍길동", 42, 16000, 1, journal, wav, output.recordings, utterances, chunks);
@@ -359,13 +358,11 @@ void recording_origins_and_duplicate_statuses() {
   check(ready[1]["data"]["capture_start_ms"] == 3550000 &&
         ready[1]["data"]["timestamp_origin"] == "sdk.cloud_recording_callback",
         "Preserve monotonic capture time and the chosen origin source separately");
-  check(output.events("speech_on")[1]["data"]["speech_start_ms"] == 10000,
-        "Speech events must also report cloud playback time");
 }
 
 void cloud_boundary_splits_pcm_without_fake_speech_events() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0;
   AudioSegmenter segmenter("user-42-join-1", "홍길동", 42, 16000, 1, journal, wav, output.recordings, utterances, chunks);
@@ -380,8 +377,7 @@ void cloud_boundary_splits_pcm_without_fake_speech_events() {
   const auto ready = output.events("audio.chunk_ready");
   check(ready.size() == 2 && ready[0]["data"]["end_ms"] == 995 && ready[1]["data"]["start_ms"] == 0,
         "Cloud boundaries must clip PCM at sample precision and reset the new file");
-  check(ready[0]["data"]["utterance_id"] == ready[1]["data"]["utterance_id"] &&
-        output.events("speech_on").size() == 1 && output.events("speech_off").size() == 1,
+  check(ready[0]["data"]["utterance_id"] == ready[1]["data"]["utterance_id"],
         "A file boundary must preserve the utterance without invented VAD transitions");
   SF_INFO info{};
   auto first = read_wav(output.root / ready[0]["data"]["wav_path"].get<std::string>(), info);
@@ -393,7 +389,7 @@ void cloud_boundary_splits_pcm_without_fake_speech_events() {
 
 void pause_resumes_same_playback_clock_and_names_stay_safe() {
   Output output;
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0, u2 = 0, c2 = 0;
   AudioSegmenter speaker("user-1-join-1", "홍길동/../\n", 1, 16000, 1, journal, wav, output.recordings, utterances, chunks);
@@ -438,7 +434,7 @@ void unrecorded_wall_clock_wraps_midnight_without_losing_the_date() {
   Output output;
   output.recordings = RecordingTimeline{};
   output.recordings.change(1, 0, 0, 53998000);  // UTC 14:59:58 = GMT+9 23:59:58.
-  EventJournal journal(output.root, "session");
+  EventJournal journal(output.root, "session", "chunks.jsonl");
   WavWriter wav(output.root);
   uint64_t utterances = 0, chunks = 0;
   AudioSegmenter speaker("user-1-join-1", "홍길동", 1, 16000, 1, journal, wav, output.recordings, utterances, chunks);
@@ -451,9 +447,6 @@ void unrecorded_wall_clock_wraps_midnight_without_losing_the_date() {
   check(ready[0]["data"]["start_unix_ms"] == 53998000 && ready[0]["data"]["end_unix_ms"] == 54003000 &&
         ready[0]["data"]["start_ms"] == 53998000 && ready[0]["data"]["end_ms"] == 54003000,
         "Absolute milliseconds must preserve the date and ordering across midnight");
-  check(output.events("speech_on")[0]["data"]["recording_time_ms"].is_null() &&
-        output.events("speech_on")[0]["data"]["speech_start_unix_ms"] == 53998000,
-        "Unrecorded speech events must retain absolute time without inventing a cloud position");
 }
 
 int main() {

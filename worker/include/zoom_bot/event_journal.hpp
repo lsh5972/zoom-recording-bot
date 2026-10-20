@@ -9,7 +9,7 @@ namespace zoom_bot {
 // Single consumer owns the journal. SDK callback threads must enqueue instead.
 class EventJournal {
  public:
-  EventJournal(const std::filesystem::path& output, std::string session_id);
+  EventJournal(const std::filesystem::path& output, std::string session_id, const char* filename = "events.jsonl");
   ~EventJournal();
   EventJournal(const EventJournal&) = delete;
   EventJournal& operator=(const EventJournal&) = delete;

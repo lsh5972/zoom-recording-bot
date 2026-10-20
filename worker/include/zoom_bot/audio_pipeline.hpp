@@ -16,7 +16,7 @@ struct PcmPacket {
 // Run on the capture consumer, not inside SDK callbacks.
 class AudioPipeline {
  public:
-  AudioPipeline(EventJournal& events, WavWriter& wav, RecordingTimeline& recordings);
+  AudioPipeline(EventJournal& chunks, WavWriter& wav, RecordingTimeline& recordings);
   void joined(uint32_t user_id, const std::string& display_name, int64_t at_ms);
   void left(uint32_t user_id, int64_t at_ms);
   void renamed(uint32_t user_id, const std::string& display_name, int64_t at_ms);
@@ -29,7 +29,7 @@ class AudioPipeline {
  private:
   struct Stream {
     Stream(const std::string& participant_id, const std::string& display_name, const PcmPacket& packet,
-           EventJournal& events, WavWriter& wav,
+           EventJournal& chunks, WavWriter& wav,
            RecordingTimeline& recordings,
            uint64_t& utterance_number, uint64_t& chunk_number);
     int rate, channels;
@@ -48,7 +48,7 @@ class AudioPipeline {
     uint64_t utterance_number = 0, chunk_number = 0;
     std::unique_ptr<Stream> stream;
   };
-  EventJournal& events_;
+  EventJournal& chunks_;
   WavWriter& wav_;
   RecordingTimeline& recordings_;
   std::map<uint32_t, Participant> participants_;

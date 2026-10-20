@@ -9,7 +9,9 @@ Ruby는 인증·실행을 담당하고, 공식 Linux Meeting SDK를 사용하는
 구현: S2S OAuth, 회의의 실제 호스트 조회, 설정한 봇 사용자의 ZAK 발급 요청,
 SDK JWT 서명, 비공개 세션 파일 생성, Docker 실행·정지 명령.
 SDK와 독립된 C++ 음성 엔진은 사용자별 PCM → WebRTC VAD → 발화별 WAV,
-speech_on/off·청크 이벤트 기록까지 처리한다. Ruby 전송기는 완성된 WAV를 건별 POST하고
+WAV 전달용 메타데이터 생성까지 처리한다. `events.jsonl`에는 실제 Zoom SDK 이벤트 콜백만 기록한다.
+VAD의 자체 `speech_on/off`, 패킷 수신 메타데이터, SDK 함수 호출 결과와 봇 동작 기록은 저장하지 않는다.
+Ruby 전송기는 `chunks.jsonl`의 완성된 WAV를 건별 POST하고
 성공한 위치를 파일에 저장한다.
 HTTP 오류에서 응답 원문을 출력하지 않고, 401은 토큰 갱신 후 한 번만 재시도한다.
 
@@ -20,7 +22,7 @@ SDK 테스트는 서비스 응답을 대체하며 실제 음성 fixture를 콜�
 실제 Linux-All SDK 7.2.1 (5860)을 Linux ARM64 Docker에서 링크·실행했다.
 실제 S2S 인증·회의 호스트 조회·봇 사용자 ZAK 발급·SDK 인증·일반 참가자 입장·VoIP 연결을 확인했다.
 클라우드 녹화를 유지한 회의에서 SDK 녹화 권한 요청 → 승인 응답 → raw 녹음 시작·구독까지 성공했다.
-실제 화자 PCM으로 32kHz·mono·16bit WAV 두 개와 speech_on/off·청크 이벤트를 생성하고
+이전 실회의 검증에서는 실제 화자 PCM으로 32kHz·mono·16bit WAV 두 개와 당시의 자체 이벤트를 생성하고
 독립 디코더로 프레임 수·음성 샘플을 확인했다. 동시 다화자의 실제 회의 검증은 아직 하지 않았다.
 Linux x86_64 SDK 7.2.1을 Apple Silicon Docker의 에뮬레이션으로 실행해 실제 회의에서
 공유 화면 JPEG 12장과 Zoom 표시 이름을 포함한 WAV를 생성했다. JPEG는 모두 640×360이며
@@ -189,7 +191,7 @@ ZOOM_BOT_IMAGE=zoom-bot-worker-arm64:diagnostic ./bin/zoom-bot-docker run 123456
 이미 출력이 있는 회의의 `runs/<meeting_id>`는 기존 데이터 보호를 위해 재사용되지 않는다.
 화자별 WAV와 공유 JPG 저장·권한 확인·회의 종료 처리는 기존 worker와 같다.
 
-- `runs/<meeting_id>/output/events.jsonl`의 `sdk.diagnostics.enabled`로 진단 빌드를 구분한다.
+- 진단 빌드의 `sdk.diagnostics.*`는 표준 오류에만 출력하며 `events.jsonl`에 저장하지 않는다.
 - `sdk.diagnostics.share`는 입장 후 1초 간격으로 공유 통계 반환 코드, 수신 대역폭·FPS·해상도,
   연결 품질, 공유 컨트롤러·목록의 존재 여부, 실제 공유 소스 목록과 캡처 상태를 기록한다.
   `received: null`은 통계 조회 실패이며, 성공한 조회의 0과 구분한다.
@@ -197,7 +199,7 @@ ZOOM_BOT_IMAGE=zoom-bot-worker-arm64:diagnostic ./bin/zoom-bot-docker run 123456
   렌더러를 아직 만들지 못했다면 프레임 콜백 0만으로 SDK 내부의 미디어 수신 실패를 단정할 수 없다.
 - `sdk.diagnostics.stopped`에는 종료 시점의 오디오·공유 콜백 누계가 남는다.
 - SDK 내부 로그를 켜고, SDK 로그 디렉터리를 `runs/<meeting_id>/output/sdk-logs/`로 연결한다.
-  SDK 내부 로그는 암호화될 수 있어 사람이 읽을 수 있는 진단 값은 위 이벤트에 별도로 기록한다.
+  SDK 내부 로그는 암호화될 수 있어 사람이 읽을 수 있는 진단 값은 표준 오류로 출력한다.
   SDK의 `data` 디렉터리나 `join.json`은 로그 폴더로 복사하지 않는다.
 
 통계 API의 실패나 빈 공유 목록은 진단 결과로 남기며 녹음을 중단하거나 임의 소스 ID로 구독하지 않는다.
@@ -307,31 +309,33 @@ Ruby `ChunkDelivery`는 건별 전달·재시도를 담당한다.
 - 참가자 영상은 구독하지 않고 공유 화면만 저장한다. 공유가 없거나 raw 녹화 권한을 잃으면 저장하지 않는다.
 - 최초 프레임을 받으면 바로 저장하고, 정적인 슬라이드도 최신 프레임을 유지해 지정 간격마다 저장한다.
 - 동일한 픽셀은 복사를 생략하고 저장 큐에서 버퍼를 공유한다. 화면이 같으면 JPEG 인코딩 결과도 재사용한다.
-  파일·캡처 시각은 매번 새로 기록하고, 모든 수신 프레임 이벤트는 유지한다.
+  파일명에는 매번 새로 계산한 캡처 시각을 사용한다. 프레임마다 진단 기록을 생성하지 않는다.
 - 이미지는 항상 640×360 JPEG다. 원본 비율을 보존하고 남는 공간은 검게 채운다.
 - SDK에 360p를 요청하되 실제 수신 해상도는 SDK가 결정한다. 저장 간격은 영상 수신·디코딩 FPS를 제한하지 않는다.
 - 공유 소스가 바뀌거나 raw 스트림이 꺼지면 이전 프레임을 버린다. 재접속·권한 복원 시 현재 공유를 다시 조회한다.
 - 여러 공유가 있으면 한 소스만 구독한다. 새 공유 시작 통지를 받으면 그 소스로 전환한다.
-- JPEG와 WAV는 같은 폴더에 저장한다. `screenshot.saved`에 이미지 경로·해상도·공유 사용자/소스 ID,
-  원본 프레임 시각·캡처 시각·Unix 시각·녹화본 시각을 기록한다. 이미지 전달 API는 구현하지 않는다.
-- 수신 프레임 메타데이터는 `sdk.raw_share.frame`, 스트림 상태·커서 위치는 `sdk.callback`에 기록한다.
+- JPEG와 WAV는 같은 폴더에 저장한다. 이미지 시각은 파일명에 포함하며 별도 저장 동작 로그는 만들지 않는다.
+  이미지 전달 API는 구현하지 않는다.
+- 실제 Zoom의 스트림 상태·커서 콜백은 `sdk.callback`에 기록한다. 프레임별 메타데이터는 기록하지 않는다.
 - 시각은 아래 WAV와 같은 `RecordingTimeline`을 사용한다. 클라우드 녹화가 없거나 일시정지 중이면 GMT+9 시각이다.
 
 - 사용자별 PCM에 VAD를 적용한다. 한 기기를 공유하는 여러 사람의 목소리 분리는 범위 밖이다.
 - 기본은 발화 단위다. VAD가 비음성으로 판정한 상태가 400ms 이어지면 마감한다.
 - 발화가 30초 이어질 때만 중간 분할한다. pre-roll 200ms와 강제 분할 overlap 200ms를 사용한다.
   30초는 발화 시작부터 센다. pre-roll·overlap·무음 꼬리를 포함한 WAV 길이는 30초를 넘을 수 있다.
-- 완성된 독립 WAV마다 `audio.chunk_ready`를 즉시 기록한다. 회의 종료까지 기다리지 않는다.
+- 완성된 독립 WAV마다 `chunks.jsonl`에 `audio.chunk_ready` 메타데이터를 즉시 기록한다.
+  회의 종료까지 기다리지 않는다. 이 파일은 WAV 전달용 목록이며 프로그램 동작 로그를 넣지 않는다.
 - 청크마다 `chunk_id`, `participant_session_id`, `utterance_id`, 화자별 `sequence`,
   전체 출력 폴더의 `file_sequence`, `recording_id`, `display_name`, `speaker_label`,
   `start_ms`/`end_ms`, `capture_start_ms`/`capture_end_ms`, `start_unix_ms`/`end_unix_ms`,
   `timestamp_origin`, `overlap_ms`, `cut_reason`을 포함한다.
-- `speech_on/off`는 VAD 상태 전이에서 발생한다. 강제 청크 분할이나 mute 상태와 혼동하지 않는다.
-- SDK의 active-audio 콜백은 `sdk.callback`에 별도로 보존한다.
+- VAD는 WAV 분할에만 사용한다. 자체 `speech_on/off` 이벤트를 기록하지 않는다.
+- Zoom의 `onUserActiveAudioChange` 등 실제 active-audio 콜백은 `sdk.callback`에 보존한다.
 - 재입장은 새 participant session으로 구분한다. 표시 이름으로 합치지 않는다.
-- 이벤트는 `events.jsonl`에 순번·수집 시간·기록 시각과 함께 행 단위로 즉시 쓴다.
+- Zoom SDK 이벤트는 `events.jsonl`에 순번·수집 시간·기록 시각과 함께 행 단위로 즉시 쓴다.
   디스크 동기화(`fsync`)는 100ms 간격으로 묶으며, 이벤트가 없어도 소비 스레드가 동기화를 확인한다.
-  WAV·JPEG 완료 이벤트와 정상 종료 시에는 즉시 동기화한다. 이벤트를 생략하거나 합치지 않는다.
+  WAV 전달 메타데이터는 WAV 완료 직후 동기화하고, 정상 종료 시 두 JSONL 파일을 동기화한다.
+  실제 SDK 이벤트를 생략하거나 합치지 않는다.
   OS·VM 장애나 정전 시 마지막 동기화 이후 이벤트는 유실될 수 있다. SDK 이벤트 수집 범위는 아래 설명을 따른다.
 - 외부 전사 구현은 범위 밖이다. 수신 측은 `chunk_id` 중복 처리와 overlap 구간을 고려해야 한다.
 
@@ -345,6 +349,7 @@ runs/<meeting_id>/output/
   recording-1__share__00:01:12__shot-1.jpg
   unrecorded__share__23:59:58__shot-2.jpg
   events.jsonl
+  chunks.jsonl
   delivery.json
 ```
 
@@ -364,11 +369,10 @@ WAV의 기준은 다음과 같다. S2S scope나 앱 설정을 변경하지 않�
 `capture_start_ms`/`capture_end_ms`와 이벤트 최상위 `capture_ms`는 봇의 첫 입장 기준으로 계속 증가하고,
 `start_unix_ms`/`end_unix_ms`는 날짜를 포함하는 절대 시각이다. SDK의 PCM timestamp에 공통 offset을 적용하고
 화자별 샘플 수로 동일하거나 겹치는 callback timestamp를 보정한다. SDK timestamp 자체가 과거로 이동하면
-오류로 처리하고, 실제 앞으로의 간격은 gap 이벤트로 기록한다.
+오류로 처리하고, 실제 앞으로의 간격은 WAV를 분할해 보존한다.
 
-녹화 상태 경계에서 WAV를 분할하되 화자·utterance ID를 유지하고 가짜 `speech_on/off`를 만들지 않는다.
-발화 이벤트는 녹화 중 `recording_time_ms`와 `speech_start_ms`/`speech_end_ms`에 녹화본 기준 시각을 담는다.
-녹화가 없으면 이 값은 null이며 `speech_start_unix_ms`/`speech_end_unix_ms`와 capture 시각을 사용한다.
+녹화 상태 경계에서 WAV를 분할하되 화자·utterance ID를 유지한다.
+WAV의 화자·시간·녹화본 정보는 `chunks.jsonl`에 포함한다. 프로그램이 만든 발화 이벤트는 기록하지 않는다.
 ASR 결과는 청크 `start_ms`에 WAV 내부 시각을 더한다. 녹화 구간에서는 재생 위치가 되고,
 unrecorded 구간에서는 Unix 시각이 된다. WAV의 `start_ms`는 pre-roll을 포함하므로 VAD 발화 시작과 다를 수 있다.
 
@@ -407,13 +411,14 @@ SDK 어댑터는 사용자별 PCM을 복사해 32MiB·20,000개 상한 큐에 �
 현재 공개 API 정의에서 23개 인터페이스·181개 콜백을 확인했다. 인증, 회의 상태, 참가자, 오디오,
 녹음, 영상 상태, 화면 공유 상태, 채팅, 대기실, 알림, 회의 설정, breakout, webinar,
 암호화, AI Companion 상태, 오디오 장치 변경, 네트워크 알림을 포함한다. 해당 기능을 켜거나 내용을 전송하지 않는다.
-mixed·share·interpreter raw audio 콜백도 메타데이터를 기록하며, 화자 WAV는 one-way PCM만 사용한다.
+mixed·share·interpreter raw audio와 화면 프레임마다 패킷 메타데이터를 기록하지 않는다.
+화자 WAV는 one-way PCM만 사용한다.
 
-`sdk.callback_inventory`에 버전별 목록, `sdk.event_coverage`에 controller 제공 여부·등록 결과를 기록한다.
+`events.jsonl`에는 실제 수신한 콜백만 `sdk.callback`으로 기록한다.
 `sdk.callback`은 인터페이스명·콜백명·복사한 인자를 보존한다. 참가자·오디오 상태·채팅 내용·공유 상태 등
 주요 데이터는 JSON으로 복사하고, 수명이 짧은 SDK action handler는 존재 여부만 기록한다.
 지원하지 않는 객체 payload는 `opaque: true`로 표시한다. SDK가 제공하지 않거나 등록에 실패한 기능의
-이벤트까지 수집했다고 주장하지 않는다. 영상·화면 공유 미디어 저장은 구현 범위 밖이다.
+이벤트까지 수집했다고 주장하지 않는다. 참가자 영상은 저장하지 않으며 공유 화면 JPEG는 위 설명을 따른다.
 
 공개 헤더로 로컬에서 adapter/main을 컴파일하고 SDK 응답 대역 테스트를 실행할 수도 있다.
 Python 3·GLib 개발 패키지가 추가로 필요하다. SDK 바이너리 링크는 별도다.
@@ -443,14 +448,22 @@ HTTPS를 사용하며 로컬 테스트에 한해 loopback HTTP를 허용한다.
 캡처 프로세스와 별개로 실행하므로 회의가 끝난 후에도 전달을 계속할 수 있다.
 관리 컨테이너에서 `localhost`는 그 컨테이너를 뜻한다. 수신 endpoint는 컨테이너에서 접근 가능한 주소를 사용한다.
 
-POST 형식은 multipart다. `metadata`는 `audio.chunk_ready` 이벤트 전체를 담는 JSON이고,
+POST 형식은 multipart다. `metadata`는 `chunks.jsonl`의 `audio.chunk_ready` 레코드 전체를 담는 JSON이고,
 `audio`는 화자·시간범위 파일명을 유지한 WAV다. `Idempotency-Key`는 `chunk_id`다.
 전송기는 완성된 JSONL 행만 읽으며 WAV 저장·마감이 끝난 청크만 보낸다.
+이전 버전의 출력 폴더에는 `chunks.jsonl`이 없으므로 기존 `events.jsonl`에서 전달할 청크를 읽는다.
 2xx 응답 후 커서를 기록한다. 응답 수신과 커서 저장 사이에 중단되면 같은 청크가 다시 전송될 수 있으므로
 수신 시스템은 `chunk_id`로 중복을 제거해야 한다. 원본 WAV는 전달 성공 후에도 보존한다.
 WAV와 무관한 이벤트의 커서는 읽기 완료 시 한 번 기록하며, 미완성 행과 전송 실패 청크는 건너뛰지 않는다.
 
 ## 검증
+
+2026-10-20 이벤트 범위 수정: `events.jsonl`에는 실제 Zoom SDK 이벤트 콜백만 저장하고,
+자체 발화·패킷·상태 조회·파일 저장 동작 기록은 생성하지 않는다. WAV 전달 정보는 `chunks.jsonl`에만 기록한다.
+이 변경을 적용하려면 C++ worker 이미지와 Ruby 관리 이미지를 모두 다시 빌드한다.
+일반·진단 구성 각각 CTest 6개와 Ruby 테스트 44개·326 assertions로 SDK 발화자 콜백 보존,
+화자별 WAV·JPEG 생성, 녹화본 기준 시각, 새 메타데이터와 이전 출력의 전달을 확인했다.
+이 검증은 공개 SDK 헤더와 응답 대역을 사용하며 실제 Zoom 회의에는 접속하지 않았다.
 
 2026-10-19 성능 수정: 큐 용량 계산용 JSON 직렬화 제거, 빈 큐에 항목이 들어올 때만 소비 스레드 깨우기,
 이벤트 동기화 묶음 처리, JPEG 변환 좌표 사전 계산을 적용했다. 공유 픽셀은 계속 최신 상태로 복사하고,
@@ -463,7 +476,7 @@ macOS ARM64 Release 빌드에서 같은 오프라인 부하를 변경 전후 3�
 | 이벤트 10,000건 기록 | 233.6ms | 54.4ms | 76.7% |
 | 10화자 PCM 10,000개 + JPEG 10장 + 콜백 1,000건 | 314.1ms | 92.4ms | 70.6% |
 
-이 수치는 우리 코드의 처리 비용이며, 실제 회의의 Zoom SDK·네트워크·디코딩·amd64 에뮬레이션은 포함하지 않는다.
+이 수치는 패킷 진단 기록을 제거하기 전 구현의 처리 비용이며, 실제 회의의 Zoom SDK·네트워크·디코딩·amd64 에뮬레이션은 포함하지 않는다.
 전체 봇 CPU 사용률이 같은 비율로 감소한다는 의미가 아니다. 변경 후 CTest 6개를 통과했으며,
 실제 SDK를 대신하는 테스트 대역으로 화자별 PCM·발화 이벤트·이미지와 권한 전이를 확인했다.
 이번 성능 수정 후 실제 회의와 Linux SDK 바이너리 실행은 검증하지 않았다.

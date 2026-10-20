@@ -43,6 +43,7 @@ target_compile_definitions(audio_tests PRIVATE FVAD_FIXTURE="${libfvad_SOURCE_DI
 add_test(NAME audio_tests COMMAND audio_tests)
 add_executable(capture_tests tests/capture_tests.cpp)
 target_link_libraries(capture_tests PRIVATE zoom_bot_audio)
+target_compile_definitions(capture_tests PRIVATE FVAD_FIXTURE="${libfvad_SOURCE_DIR}/tests/data/audio_tiny16.wav")
 add_test(NAME capture_tests COMMAND capture_tests)
 add_executable(journal_tests tests/journal_tests.cpp)
 target_link_libraries(journal_tests PRIVATE zoom_bot_audio)

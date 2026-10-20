@@ -36,7 +36,6 @@ class ZoomSession final : public SdkEventSink, public IZoomSDKAudioRawDataDelega
   void try_recording();
   void pause_recording(const std::string& reason);
   void error(const char* reason);
-  void raw_event(const char* kind, AudioRawData* data, nlohmann::json fields);
 #ifdef ZOOM_SHARE_DIAGNOSTICS
   void diagnose_share();
   std::chrono::steady_clock::time_point next_share_diagnostics_{};
@@ -56,14 +55,12 @@ class ZoomSession final : public SdkEventSink, public IZoomSDKAudioRawDataDelega
   bool initialized_ = false, in_meeting_ = false, recording_started_ = false, subscribed_ = false;
   bool join_requested_ = false, done_ = false, error_ = false;
   bool recording_privilege_requested_ = false;
-  int last_polled_status_ = -1;
   std::atomic<bool> denied_{false};
   std::atomic<bool> receiving_{false};
   std::chrono::steady_clock::time_point deadline_, next_permission_check_;
   std::mutex actions_mutex_, users_mutex_, raw_mutex_;
   std::deque<std::function<void()>> actions_;
   std::set<uint32_t> known_users_;
-  nlohmann::json previous_permission_;
   ShareCapture share_;
 
   IAuthServiceEventListener auth_events_{*this};

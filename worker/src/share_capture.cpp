@@ -20,8 +20,7 @@ ShareCapture::ShareCapture(CaptureRuntime& capture, int interval_seconds)
 ShareCapture::~ShareCapture() { stop(); }
 
 void ShareCapture::operation(SDKError result, const char* name) {
-  capture_.event("sdk.operation", {{"operation", name}, {"result", static_cast<int>(result)}});
-  if (result != SDKERR_SUCCESS) throw std::runtime_error("SDK share operation failed");
+  if (result != SDKERR_SUCCESS) throw std::runtime_error(std::string("SDK share operation failed: ") + name);
 }
 
 void ShareCapture::suspend() {
@@ -35,8 +34,8 @@ void ShareCapture::stop() {
   suspend();
   auto* renderer = renderer_.exchange(nullptr);
   if (renderer) {
-    capture_.event("sdk.operation", {{"operation", "unsubscribe_share"}, {"result", static_cast<int>(renderer->unSubscribe())}});
-    capture_.event("sdk.operation", {{"operation", "destroy_share_renderer"}, {"result", static_cast<int>(destroyRenderer(renderer))}});
+    renderer->unSubscribe();
+    destroyRenderer(renderer);
   }
   std::lock_guard<std::mutex> lock(mutex_);
   user_id_ = source_id_ = 0;
@@ -58,11 +57,6 @@ void ShareCapture::select(uint32_t user_id, uint32_t source_id) {
     receiving_ = true;
   }
   operation(renderer->subscribe(source_id, RAW_DATA_TYPE_SHARE), "subscribe_share");
-  capture_.event("sdk.event_coverage", {{"interface", "IZoomSDKRendererDelegate"}, {"registered", true},
-                                       {"callbacks", {"onRendererBeDestroyed", "onRawDataFrameReceived",
-                                                      "onRawDataStatusChanged", "onShareCursorDataReceived"}}});
-  capture_.event("share.capture_started", {{"user_id", user_id}, {"share_source_id", source_id},
-                                           {"interval_seconds", interval_ms_ / 1000}, {"width", 640}, {"height", 360}});
 }
 
 void ShareCapture::changed(uint32_t user_id, uint32_t source_id, SharingStatus status, ShareType type) {
@@ -76,23 +70,16 @@ void ShareCapture::refresh(IMeetingShareController* controller) {
   auto* users = controller->GetViewableSharingUserList();
   if (!users) return;
   uint32_t user_id = 0, source_id = 0;
-  auto snapshot = nlohmann::json::array();
   bool current_visible = false;
   for (int i = 0; i < users->GetCount(); ++i) {
     auto* sources = controller->GetSharingSourceInfoList(users->GetItem(i));
     if (!sources) continue;
     for (int j = 0; j < sources->GetCount(); ++j) {
       const auto info = sources->GetItem(j);
-      snapshot.push_back({{"user_id", info.userid}, {"share_source_id", info.shareSourceID},
-                          {"status", static_cast<int>(info.status)}, {"content_type", static_cast<int>(info.contentType)}});
       if (!visible(info.status, info.contentType) || !info.shareSourceID) continue;
       if (renderer_ && info.shareSourceID == source_id_) current_visible = true;
       if (!source_id) { user_id = info.userid; source_id = info.shareSourceID; }
     }
-  }
-  if (snapshot != previous_sources_) {
-    capture_.event("share.sources", {{"sources", snapshot}, {"sharing_user_count", users->GetCount()}});
-    previous_sources_ = std::move(snapshot);
   }
   if (current_visible) return;
   if (source_id) select(user_id, source_id);
@@ -145,24 +132,20 @@ void ShareCapture::onRawDataFrameReceived(YUVRawDataI420* data) {
     frame.rotation = data->GetRotation(); frame.limited_range = data->IsLimitedI420();
     frame.source_ms = data->GetTimeStamp();
     frame.i420 = pixels_;
-    capture_.event("sdk.raw_share.frame", {{"source_id", data->GetSourceID()}, {"source_timestamp_ms", data->GetTimeStamp()},
-                                           {"width", data->GetStreamWidth()}, {"height", data->GetStreamHeight()},
-                                           {"rotation", data->GetRotation()}, {"bytes", data->GetBufferLen()}});
   } catch (...) { capture_.fail(); }
 }
 void ShareCapture::onRendererBeDestroyed() {
   renderer_ = nullptr;
   suspend();
-  capture_.event("sdk.callback", {{"interface", "IZoomSDKRendererDelegate"}, {"callback", "onRendererBeDestroyed"}});
+  capture_.sdk_callback("IZoomSDKRendererDelegate", "onRendererBeDestroyed", nlohmann::json::object());
 }
 void ShareCapture::onRawDataStatusChanged(RawDataStatus status) {
   if (status == RawData_Off) { std::lock_guard<std::mutex> lock(mutex_); latest_.reset(); pixels_.reset(); }
-  capture_.event("sdk.callback", {{"interface", "IZoomSDKRendererDelegate"}, {"callback", "onRawDataStatusChanged"},
-                                   {"arguments", {{"status", static_cast<int>(status)}}}});
+  capture_.sdk_callback("IZoomSDKRendererDelegate", "onRawDataStatusChanged", {{"status", static_cast<int>(status)}});
 }
 void ShareCapture::onShareCursorDataReceived(ZoomSDKShareCursorData info) {
-  capture_.event("sdk.callback", {{"interface", "IZoomSDKRendererDelegate"}, {"callback", "onShareCursorDataReceived"},
-                                   {"arguments", {{"source_id", info.source_id}, {"x", info.x}, {"y", info.y}}}});
+  capture_.sdk_callback("IZoomSDKRendererDelegate", "onShareCursorDataReceived",
+                        {{"source_id", info.source_id}, {"x", info.x}, {"y", info.y}});
 }
 #ifdef ZOOM_SHARE_DIAGNOSTICS
 nlohmann::json ShareCapture::diagnostics() {

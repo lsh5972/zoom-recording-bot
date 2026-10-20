@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <iostream>
 #include <map>
 #include <optional>
 
@@ -31,7 +32,8 @@ size_t json_storage_bytes(const nlohmann::json& value) {
 
 CaptureRuntime::CaptureRuntime(const std::filesystem::path& output, const std::string& session_id,
                                size_t capacity, int64_t meeting_start_unix_ms)
-    : events_(output, session_id), wav_(output), screenshots_(output), audio_(events_, wav_, recordings_), capacity_(capacity),
+    : events_(output, session_id), chunks_(output, session_id, "chunks.jsonl"),
+      wav_(output), screenshots_(output), audio_(chunks_, wav_, recordings_), capacity_(capacity),
       meeting_start_unix_ms_(meeting_start_unix_ms),
       thread_([this] { consume(); }) {}
 
@@ -71,8 +73,11 @@ void CaptureRuntime::push(Item item) noexcept {
   } catch (...) { fail(); }
 }
 
-void CaptureRuntime::event(std::string type, nlohmann::json data) noexcept {
-  push({Kind::Event, now_ms(), std::move(type), std::move(data)});
+void CaptureRuntime::sdk_callback(const char* interface, const char* callback, nlohmann::json arguments) noexcept {
+  try {
+    push({Kind::Callback, now_ms(), {},
+          {{"interface", interface}, {"callback", callback}, {"arguments", std::move(arguments)}}});
+  } catch (...) { fail(); }
 }
 void CaptureRuntime::joined(uint32_t user_id, std::string name) noexcept {
   Item item{Kind::Joined, now_ms(), std::move(name), {}};
@@ -144,20 +149,20 @@ void CaptureRuntime::consume() noexcept {
       }
       if (!available) {
         if (failed_) {
-          events_.append("capture.error", now_ms(), {{"reason", "callback_queue_failed"}});
+          std::cerr << "Capture failed: callback queue overflow or allocation failure\n";
           break;
         }
         if (closing) break;
         audio_.advance(now_ms());
         events_.sync_if_due();
+        chunks_.sync_if_due();
         continue;
       }
       switch (item.kind) {
         case Kind::Screenshot:
-          events_.append("screenshot.saved", item.at_ms, screenshots_.write(item.frame, item.at_ms, recordings_));
-          events_.sync();
+          screenshots_.write(item.frame, item.at_ms, recordings_);
           break;
-        case Kind::Event: events_.append(item.text, item.at_ms, std::move(item.data)); break;
+        case Kind::Callback: events_.append("sdk.callback", item.at_ms, std::move(item.data)); break;
         case Kind::Joined:
           source_clocks.erase(item.packet.user_id);
           audio_.joined(item.packet.user_id, item.text, item.at_ms);
@@ -181,14 +186,6 @@ void CaptureRuntime::consume() noexcept {
             const auto reason = status == 0 ? "cloud_recording_started" :
                                 status == 3 ? "cloud_recording_paused" : "cloud_recording_stopped";
             audio_.recording_changed(reason, item.at_ms);
-            const auto* span = recordings_.at(item.at_ms);
-            item.data["recording_id"] = span && span->sequence > 0 ? nlohmann::json(span->id()) : nlohmann::json(nullptr);
-            if (span) {
-              item.data["timestamp_origin"] = span->origin_source;
-              item.data["recording_start_unix_ms"] = span->sequence > 0 ?
-                  nlohmann::json(span->recording_start_unix_ms) : nlohmann::json(nullptr);
-            }
-            events_.append("cloud.recording_state", item.at_ms, std::move(item.data));
           }
           break;
         }
@@ -216,24 +213,23 @@ void CaptureRuntime::consume() noexcept {
           if (!source_clocks.count(packet.user_id))
             source_clocks.emplace(packet.user_id, SourceClock{packet.rate, packet.channels, packet.start_ms,
                                                              source, packet.samples.size() / packet.channels});
-          events_.append("sdk.raw_audio.one_way", item.at_ms,
-                         {{"user_id", packet.user_id}, {"source_timestamp_ms", source},
-                          {"start_ms", packet.start_ms}, {"sample_rate", packet.rate},
-                          {"channels", packet.channels}, {"sample_frames", packet.samples.size() / packet.channels}});
           audio_.consume(std::move(packet));
           break;
         }
       }
+      events_.sync_if_due();  // PCM traffic must not delay synchronization of actual SDK callbacks.
     }
     audio_.finish(failed_ ? "capture_failed" : "worker_stopped", now_ms());
     events_.sync();
+    chunks_.sync();
   } catch (...) {
     failed_ = true;
     try {
-      events_.append("capture.error", now_ms(), {{"reason", "capture_consumer_failed"}});
+      std::cerr << "Capture failed: audio, image or storage processing failed\n";
       audio_.finish("capture_failed", now_ms());
       events_.sync();
-    } catch (...) {}  // A failed storage device cannot accept its own error event.
+      chunks_.sync();
+    } catch (...) {}  // Storage failure may also prevent final WAV publication or synchronization.
   }
 }
 }  // namespace zoom_bot

@@ -40,7 +40,7 @@ int main() {
     measure("journal_10000_events", [&] {
       EventJournal journal(journal_output.root, "benchmark");
       for (int i = 0; i < 10000; ++i)
-        journal.append("sdk.raw_audio.one_way", i * 10,
+        journal.append("sdk.callback", i * 10,
                        {{"user_id", 42}, {"source_timestamp_ms", i * 10}, {"sample_rate", 16000},
                         {"channels", 1}, {"sample_frames", 160}});
     });
@@ -66,25 +66,25 @@ int main() {
           image.i420 = std::make_shared<const std::vector<unsigned char>>(640 * 360 * 3 / 2, 128 + frame % 100);
           capture.screenshot(std::move(image), frame * 10);
         }
-        capture.event("sdk.callback", {{"interface", "IMeetingAudioCtrlEvent"}, {"callback", "onUserActiveAudioChange"},
-                                       {"arguments", {{"user_id", 1}, {"sequence", frame}}}});
+        capture.sdk_callback("IMeetingAudioCtrlEvent", "onUserActiveAudioChange",
+                             {{"user_id", 1}, {"sequence", frame}});
       }
       capture.close();
       if (capture.failed()) throw std::runtime_error("Benchmark capture overflow or storage failure");
     });
     std::ifstream events(capture_output.root / "events.jsonl");
-    int packets = 0, images = 0, callbacks = 0, sequence = 0;
+    int images = 0, callbacks = 0, sequence = 0;
     for (std::string line; std::getline(events, line);) {
       const auto event = nlohmann::json::parse(line);
       if (event.at("seq") != ++sequence) throw std::runtime_error("Lost or reordered capture event");
       const auto type = event.at("type").get<std::string>();
-      packets += type == "sdk.raw_audio.one_way";
-      images += type == "screenshot.saved";
       callbacks += type == "sdk.callback";
     }
-    if (packets != 10000 || images != 10 || callbacks != 1000)
+    for (const auto& file : std::filesystem::directory_iterator(capture_output.root))
+      images += file.path().extension() == ".jpg";
+    if (images != 10 || callbacks != 1000)
       throw std::runtime_error("Lost benchmark audio packets, images or callback events");
-    std::cout << "Verified all events, 10000 PCM packets and 10 JPEGs; no Zoom SDK or emulation included\n";
+    std::cout << "Verified 1000 Zoom callbacks and 10 JPEGs after queuing 10000 PCM packets; no Zoom SDK or emulation included\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

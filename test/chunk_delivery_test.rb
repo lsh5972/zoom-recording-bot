@@ -49,7 +49,31 @@ class ChunkDeliveryTest < Minitest::Test
   end
 
   def journal(output, events)
-    File.write(File.join(output, 'events.jsonl'), events.map { |event| JSON.generate(event) + "\n" }.join)
+    File.write(File.join(output, 'chunks.jsonl'), events.map { |event| JSON.generate(event) + "\n" }.join)
+  end
+
+  def test_delivery_reads_chunk_manifest_without_consuming_zoom_events
+    Dir.mktmpdir do |output|
+      File.write(File.join(output, 'events.jsonl'), JSON.generate(type: 'sdk.callback', data: { callback: 'onUserActiveAudioChange' }) + "\n")
+      event = write_chunk(output, 'one')
+      File.write(File.join(output, 'chunks.jsonl'), JSON.generate(event) + "\n")
+      receiver = Receiver.new
+      assert_equal 1, ZoomBot::ChunkDelivery.new(output: output, client: receiver).drain
+      assert_equal ['one'], receiver.requests.map { |metadata, _| metadata['data']['chunk_id'] }
+      assert_equal 0, ZoomBot::ChunkDelivery.new(output: output, client: receiver).drain
+      assert_equal 'sdk.callback', JSON.parse(File.read(File.join(output, 'events.jsonl')))['type']
+    end
+  end
+
+  def test_legacy_recordings_without_a_manifest_can_still_be_delivered
+    Dir.mktmpdir do |output|
+      event = write_chunk(output, 'legacy')
+      File.write(File.join(output, 'events.jsonl'), JSON.generate(event) + "\n")
+      receiver = Receiver.new
+      assert_equal 1, ZoomBot::ChunkDelivery.new(output: output, client: receiver).drain
+      assert_equal 0, ZoomBot::ChunkDelivery.new(output: output, client: receiver).drain
+      assert_equal ['legacy'], receiver.requests.map { |metadata, _| metadata['data']['chunk_id'] }
+    end
   end
 
   def test_each_chunk_is_delivered_once_after_success_and_restart
@@ -84,9 +108,9 @@ class ChunkDeliveryTest < Minitest::Test
       events << write_chunk(output, 'one')
       events.concat([{ type: 'sdk.raw_share.frame' }] * 100)
       journal(output, events)
-      complete_size = File.size(File.join(output, 'events.jsonl'))
+      complete_size = File.size(File.join(output, 'chunks.jsonl'))
       partial = JSON.generate(write_chunk(output, 'two'))
-      File.open(File.join(output, 'events.jsonl'), 'a') { |file| file.write(partial) }
+      File.open(File.join(output, 'chunks.jsonl'), 'a') { |file| file.write(partial) }
       receiver = Receiver.new
       sender = CheckpointDelivery.new(output: output, client: receiver)
 
@@ -96,7 +120,7 @@ class ChunkDeliveryTest < Minitest::Test
       assert_equal 0, sender.drain
       assert_equal 2, sender.checkpoints.size
 
-      File.open(File.join(output, 'events.jsonl'), 'a') { |file| file.write("\n") }
+      File.open(File.join(output, 'chunks.jsonl'), 'a') { |file| file.write("\n") }
       assert_equal 1, ZoomBot::ChunkDelivery.new(output: output, client: receiver).drain
       assert_equal %w[one two], receiver.requests.map { |event, _| event['data']['chunk_id'] }
     end
@@ -126,12 +150,12 @@ class ChunkDeliveryTest < Minitest::Test
   def test_incomplete_last_line_is_ignored_until_completed
     Dir.mktmpdir do |output|
       event = JSON.generate(write_chunk(output, 'one'))
-      File.write(File.join(output, 'events.jsonl'), event[0...-2])
+      File.write(File.join(output, 'chunks.jsonl'), event[0...-2])
       receiver = Receiver.new
       sender = ZoomBot::ChunkDelivery.new(output: output, client: receiver)
       assert_equal 0, sender.drain
       assert_empty receiver.requests
-      File.open(File.join(output, 'events.jsonl'), 'a') { |file| file.write(event[-2..] + "\n") }
+      File.open(File.join(output, 'chunks.jsonl'), 'a') { |file| file.write(event[-2..] + "\n") }
       assert_equal 1, sender.drain
     end
   end

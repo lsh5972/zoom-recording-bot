@@ -18,7 +18,7 @@ class CaptureRuntime {
   ~CaptureRuntime();
   void admitted();
   int64_t now_ms() const;
-  void event(std::string type, nlohmann::json data) noexcept;
+  void sdk_callback(const char* interface, const char* callback, nlohmann::json arguments) noexcept;
   void joined(uint32_t user_id, std::string name) noexcept;
   void left(uint32_t user_id) noexcept;
   void renamed(uint32_t user_id, std::string name) noexcept;
@@ -31,7 +31,7 @@ class CaptureRuntime {
   void close();
 
  private:
-  enum class Kind { Event, Joined, Left, Renamed, Pcm, Pause, CloudRecording, Screenshot };
+  enum class Kind { Callback, Joined, Left, Renamed, Pcm, Pause, CloudRecording, Screenshot };
   struct Item {
     Kind kind;
     int64_t at_ms;
@@ -45,6 +45,7 @@ class CaptureRuntime {
   void push(Item item) noexcept;
   void consume() noexcept;
   EventJournal events_;
+  EventJournal chunks_;
   WavWriter wav_;
   ScreenshotWriter screenshots_;
   RecordingTimeline recordings_;

@@ -11,7 +11,6 @@ void signal_handler(int) { interrupted = 1; }
 
 struct SessionLoop {
   zoom_bot::ZoomSession& session;
-  zoom_bot::CaptureRuntime& capture;
   GMainLoop* loop;
   bool started = false, failed = false;
 };
@@ -24,7 +23,7 @@ gboolean update_session(gpointer data) {
     state.session.tick();
   } catch (...) {
     state.failed = true;
-    state.capture.event("worker.error", {{"reason", "sdk_start_failed"}});
+    std::cerr << "Worker failed: SDK start failed\n";
     state.session.stop("sdk_start_failed");
   }
   if (state.failed || state.session.done()) g_main_loop_quit(state.loop);
@@ -46,7 +45,7 @@ int main(int argc, char** argv) {
     {
       zoom_bot::ZoomSession session(std::move(config), capture);
       std::unique_ptr<GMainLoop, decltype(&g_main_loop_unref)> loop(g_main_loop_new(nullptr, false), g_main_loop_unref);
-      SessionLoop state{session, capture, loop.get()};
+      SessionLoop state{session, loop.get()};
       // Keep GLib dispatch and SDK calls on the main thread, including authentication and join.
       const auto timer = g_timeout_add(10, update_session, &state);
       g_main_loop_run(loop.get());

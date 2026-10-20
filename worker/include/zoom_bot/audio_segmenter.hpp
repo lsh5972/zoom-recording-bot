@@ -14,7 +14,7 @@ struct AudioFrame {
 class AudioSegmenter {
  public:
   AudioSegmenter(std::string participant_session_id, std::string display_name, uint32_t user_id, int rate, int channels,
-                 EventJournal& events, WavWriter& wav, RecordingTimeline& recordings,
+                 EventJournal& chunks, WavWriter& wav, RecordingTimeline& recordings,
                  uint64_t& utterance_number, uint64_t& chunk_number);
   void consume(AudioFrame frame, bool voiced);
   // Covers SDK silence with no PCM callbacks, departure and permission loss.
@@ -30,7 +30,7 @@ class AudioSegmenter {
   std::string participant_id_, display_name_;
   uint32_t user_id_;
   int rate_, channels_;
-  EventJournal& events_;
+  EventJournal& chunks_;
   WavWriter& wav_;
   RecordingTimeline& recordings_;
   std::deque<AudioFrame> pre_roll_;

@@ -65,12 +65,8 @@ def main():
                        f'      if (after_{method}) after_{method}({names});',
                        '    } catch (...) { sink_.failed(); }', '  }']
             total += 1
-        inventory = ', '.join('"' + method + '"' for method, _ in callbacks)
-        output += [f'  static nlohmann::json callbacks() {{ return {{{inventory}}}; }}',
-                   ' private:', '  SdkEventSink& sink_;', '};']
-    inventory = ', '.join('{"' + interface + '", ' + interface + 'Listener::callbacks()}' for interface in INTERFACES)
-    output += ['inline nlohmann::json sdk_callback_inventory() { return {' + inventory + '}; }',
-               '}  // namespace zoom_bot', '']
+        output += [' private:', '  SdkEventSink& sink_;', '};']
+    output += ['}  // namespace zoom_bot', '']
     path = Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('\n'.join(output))

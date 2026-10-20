@@ -31,7 +31,7 @@ int main() {
     {
       Output output;
       EventJournal journal(output.root, "session");
-      for (int i = 0; i < 1000; ++i) journal.append("sdk.raw_audio.one_way", i, {{"index", i}});
+      for (int i = 0; i < 1000; ++i) journal.append("sdk.callback", i, {{"index", i}});
       require(sync_calls < 100, "A burst must not sync every raw packet");
       std::ifstream file(output.root / "events.jsonl");
       int rows = 0;
@@ -46,11 +46,11 @@ int main() {
       const int synced = sync_calls;
       journal.sync();
       require(sync_calls == synced, "An unchanged journal must not sync repeatedly");
-      journal.append("speech_on", 1000, {});
+      journal.append("sdk.callback", 1000, {});
       std::this_thread::sleep_for(std::chrono::milliseconds(110));
       journal.sync_if_due();
       require(sync_calls == synced + 1, "An idle dirty journal must sync when its deadline passes");
-      journal.append("speech_off", 1100, {});
+      journal.append("sdk.callback", 1100, {});
       fail_sync = true;
       bool rejected = false;
       try { journal.sync(); } catch (const std::runtime_error&) { rejected = true; }
@@ -64,7 +64,7 @@ int main() {
       Output output;
       const int before = sync_calls;
       CaptureRuntime capture(output.root, "idle");
-      capture.event("speech_on", {});
+      capture.sdk_callback("IMeetingServiceEvent", "onMeetingStatusChanged", {{"status", 3}});
       for (int i = 0; i < 50 && sync_calls == before; ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
       require(sync_calls > before, "Capture must sync idle events without waiting for another callback or shutdown");
@@ -74,7 +74,7 @@ int main() {
     {
       Output output;
       CaptureRuntime capture(output.root, "failed_shutdown");
-      capture.event("speech_off", {});
+      capture.sdk_callback("IMeetingServiceEvent", "onMeetingStatusChanged", {{"status", 7}});
       fail_sync = true;
       capture.close();
       require(capture.failed(), "A final sync failure must fail capture rather than report successful shutdown");

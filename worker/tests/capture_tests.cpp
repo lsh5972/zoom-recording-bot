@@ -1,8 +1,10 @@
 #include "zoom_bot/capture_runtime.hpp"
 #include "zoom_bot/join_config.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
+#include <sndfile.h>
 #include <stdexcept>
 #include <unistd.h>
 
@@ -12,144 +14,117 @@ struct Output {
   std::filesystem::path root;
   Output() { char path[] = "/tmp/zoom-bot-capture-XXXXXX"; root = mkdtemp(path); }
   ~Output() { std::filesystem::remove_all(root); }
-  std::vector<nlohmann::json> events() {
-    std::ifstream file(root / "events.jsonl");
+  std::vector<nlohmann::json> chunks() {
+    std::ifstream file(root / "chunks.jsonl");
     std::vector<nlohmann::json> rows;
-    for (std::string line; std::getline(file, line);) rows.push_back(nlohmann::json::parse(line));
+    for (std::string line; std::getline(file, line);) {
+      auto row = nlohmann::json::parse(line);
+      require(row["type"] == "audio.chunk_ready", "Chunk manifest must contain only finalized WAV metadata");
+      SF_INFO info{};
+      auto* wav = sf_open((root / row["data"]["wav_path"].get<std::string>()).c_str(), SFM_READ, &info);
+      require(wav != nullptr && info.frames > 0, "Each manifest entry must refer to an independently readable WAV");
+      sf_close(wav);
+      rows.push_back(std::move(row));
+    }
+    require(std::filesystem::file_size(root / "events.jsonl") == 0,
+            "PCM, participant snapshots, screenshots and failures must not fabricate Zoom events");
     return rows;
   }
 };
+std::vector<int16_t> speech(int rate) {
+  SF_INFO info{};
+  auto* file = sf_open(FVAD_FIXTURE, SFM_READ, &info);
+  require(file != nullptr && info.samplerate == 16000, "Speech fixture must load");
+  std::vector<int16_t> source(info.frames);
+  sf_readf_short(file, source.data(), info.frames); sf_close(file);
+  if (rate == 16000) return source;
+  std::vector<int16_t> doubled;
+  for (auto sample : source) { doubled.push_back(sample); doubled.push_back(sample); }
+  return doubled;
+}
 int main() {
   try {
-    {
+    for (int burst : {1, 2, 3, 7}) {
       Output output;
+      const auto input = speech(32000);
       CaptureRuntime capture(output.root, "session");
-      capture.admitted();
-      capture.joined(42, "Alice");
-      capture.joined(73, "Bob");
-      for (int i = 0; i < 20; ++i) {
-        capture.pcm({42, 16000, 1, 0, std::vector<int16_t>(160, 0)}, 9000 + i * 10);
-        capture.pcm({73, 16000, 1, 0, std::vector<int16_t>(160, 0)}, 9000 + i * 10);
-      }
-      capture.pause("recording_permission_lost");
-      for (int i = 20; i < 30; ++i) {
-        capture.pcm({42, 16000, 1, 0, std::vector<int16_t>(160, 0)}, 9000 + i * 10);
-        capture.pcm({73, 16000, 1, 0, std::vector<int16_t>(160, 0)}, 9000 + i * 10);
-      }
-      capture.close();
-      require(!capture.failed(), "Capture must drain two speakers without failure");
-      std::vector<int64_t> alice, bob;
-      for (const auto& event : output.events()) if (event["type"] == "sdk.raw_audio.one_way") {
-        (event["data"]["user_id"] == 42 ? alice : bob).push_back(event["data"]["start_ms"]);
-      }
-      require(alice.size() == 30 && alice == bob, "Speakers must share one SDK timestamp mapping");
-      require(alice.back() - alice.front() == 290, "Source clock must remain continuous across permission pause");
-      int joins = 0;
-      for (const auto& event : output.events()) if (event["type"] == "participant.joined") ++joins;
-      require(joins == 2, "A permission pause must preserve speaker sessions rather than fabricate rejoins");
-    }
-    for (int burst : {2, 3, 7}) {
-      Output output;
-      CaptureRuntime capture(output.root, "session");
-      capture.admitted();
-      for (int i = 0; i < 30; ++i) {
+      capture.admitted(); capture.cloud_recording(0);
+      capture.joined(42, "Alice"); capture.joined(73, "Bob");
+      for (size_t i = 0; i < input.size() / 320; ++i) {
         const auto timestamp = 9000 + (i / burst) * burst * 10 + (i / burst) % 2;
-        capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, timestamp);
-        capture.pcm({73, 32000, 1, 0, std::vector<int16_t>(320, 0)}, timestamp);
+        const std::vector<int16_t> frame(input.begin() + i * 320, input.begin() + (i + 1) * 320);
+        if (burst == 1 && i == 200) capture.pause("recording_permission_lost");
+        capture.pcm({42, 32000, 1, 0, frame}, timestamp);
+        capture.pcm({73, 32000, 1, 0, frame}, timestamp);
       }
       capture.close();
-      require(!capture.failed(), "Repeated 32kHz timestamps and 1ms jitter must not terminate capture");
-      std::vector<int64_t> alice, bob;
-      for (const auto& event : output.events()) {
-        require(event["type"] != "audio.gap", "One-frame timestamp jitter must not split speech");
-        if (event["type"] == "sdk.raw_audio.one_way")
-          (event["data"]["user_id"] == 42 ? alice : bob).push_back(event["data"]["start_ms"]);
+      require(!capture.failed(), "Quantized timestamps and jitter must preserve both speakers across permission pauses");
+      const auto chunks = output.chunks();
+      std::vector<nlohmann::json> alice, bob;
+      for (const auto& chunk : chunks) {
+        const auto& data = chunk["data"];
+        require(data["cut_reason"] != "audio_gap", "Quantized timestamps must not split speech at artificial gaps");
+        require(data["participant_session_id"] == (data["user_id"] == 42 ? "user-42-join-1" : "user-73-join-1"),
+                "Permission pauses must preserve the speaker's original participant session");
+        (data["user_id"] == 42 ? alice : bob).push_back(data);
       }
-      require(alice.size() == 30 && alice == bob, "Keep every quantized frame on the shared speaker timeline");
-      for (size_t i = 1; i < alice.size(); ++i)
-        require(alice[i] - alice[i - 1] == 10, "PCM sample counts must define consecutive frame times");
-    }
-    {
-      Output output;
-      CaptureRuntime capture(output.root, "session");
-      capture.admitted();
-      for (uint64_t timestamp : {9000, 9000, 9000, 9009, 9029, 9029})
-        capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, timestamp);
-      capture.close();
-      require(!capture.failed(), "Advancing SDK timestamps after a buffered burst must not rewind PCM");
-      int packets = 0;
-      int64_t first = 0;
-      for (const auto& event : output.events()) {
-        require(event["type"] != "audio.gap", "Buffered timestamp overlaps must not split speech");
-        if (event["type"] == "sdk.raw_audio.one_way") {
-          const auto start = event["data"]["start_ms"].get<int64_t>();
-          if (packets == 0) first = start;
-          require(start == first + packets * 10, "Keep every buffered frame on the sample timeline");
-          ++packets;
-        }
+      require(!alice.empty() && alice.size() == bob.size(), "Both speakers must produce the same voiced windows");
+      for (size_t i = 0; i < alice.size(); ++i) {
+        require(alice[i]["capture_start_ms"] == bob[i]["capture_start_ms"] &&
+                alice[i]["capture_end_ms"] == bob[i]["capture_end_ms"],
+                "Both speakers must retain the same source clock and WAV boundaries");
       }
-      require(packets == 6, "A buffered overlap must retain all six PCM frames");
     }
     for (bool backwards : {false, true}) {
       Output output;
+      const auto input = speech(32000);
       CaptureRuntime capture(output.root, "session");
-      capture.admitted();
-      capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, 9000);
-      capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, backwards ? 8990 : 9500);
+      capture.admitted(); capture.cloud_recording(0);
+      for (size_t i = 0; i < input.size() / 320; ++i) {
+        auto timestamp = int64_t{9000} + static_cast<int64_t>(i * 10);
+        if (i >= 270) timestamp += backwards ? -20 : 500;
+        capture.pcm({42, 32000, 1, 0, {input.begin() + i * 320, input.begin() + (i + 1) * 320}}, timestamp);
+      }
       capture.close();
       require(capture.failed() == backwards, "A backwards source clock must still fail capture");
-      bool gap = false;
-      for (const auto& event : output.events()) if (event["type"] == "audio.gap") gap = true;
-      require(gap == !backwards, "Real timestamp gaps must remain visible rather than be smoothed away");
+      const auto chunks = output.chunks();
+      const bool gap = std::any_of(chunks.begin(), chunks.end(), [](const auto& row) {
+        return row["data"]["cut_reason"] == "audio_gap";
+      });
+      require(gap == !backwards, "Real gaps must split WAVs rather than silently concatenate speech");
     }
-    {
-      Output output;
-      CaptureRuntime capture(output.root, "session", 1);
-      capture.pcm({1, 16000, 1, 0, std::vector<int16_t>(160, 0)}, 0);
-      capture.close();
-      require(capture.failed(), "Queue overflow must report failure, never silent success");
-      bool recorded = false;
-      for (const auto& event : output.events()) if (event["type"] == "capture.error") recorded = true;
-      require(recorded, "Queue overflow must leave durable error evidence");
-    }
-    {
+    for (int kind : {0, 1, 2}) {
       Output output;
       CaptureRuntime capture(output.root, "session", 1024);
-      ScreenshotFrame frame;
-      frame.width = 640; frame.height = 360;
-      frame.i420 = std::make_shared<const std::vector<unsigned char>>(640 * 360 * 3 / 2, 128);
-      capture.screenshot(std::move(frame), 0);
+      if (kind == 0) capture.pcm({1, 16000, 1, 0, std::vector<int16_t>(1024, 0)}, 0);
+      if (kind == 1) {
+        ScreenshotFrame frame;
+        frame.width = 640; frame.height = 360;
+        frame.i420 = std::make_shared<const std::vector<unsigned char>>(640 * 360 * 3 / 2, 128);
+        capture.screenshot(std::move(frame), 0);
+      }
+      if (kind == 2)
+        capture.sdk_callback("IMeetingChatCtrlEvent", "onChatMsgNotification",
+                             {{"nested", nlohmann::json::array({{{"name", std::string(8192, '\\')}}})}});
       capture.close();
-      require(capture.failed(), "Queue limits must account for shared pixel bytes, not only the pointer size");
-      bool overflow = false;
-      for (const auto& event : output.events())
-        if (event["type"] == "capture.error" && event["data"]["reason"] == "callback_queue_failed") overflow = true;
-      require(overflow, "Oversized shared pixels must fail in the queue rather than reach the screenshot consumer");
+      require(capture.failed(), "Queue limits must account for PCM, shared pixels and nested callback strings");
+      require(output.chunks().empty(), "Queue overflow must not publish a WAV or fabricate a Zoom error event");
     }
     {
       Output output;
-      CaptureRuntime capture(output.root, "session", 4096);
-      capture.event("sdk.callback", {{"nested", nlohmann::json::array({{{"name", std::string(8192, '\\')}}})}});
-      capture.close();
-      require(capture.failed(), "Queue accounting must include strings inside nested objects and arrays without serializing them");
-    }
-    {
-      Output output;
+      const auto input = speech(16000);
       CaptureRuntime capture(output.root, "session", 32 * 1024 * 1024, 1700000000000);
-      capture.admitted();
-      capture.cloud_recording(0);
-      capture.cloud_recording(0);
-      capture.pcm({42, 32000, 1, 0, std::vector<int16_t>(320, 0)}, 9000);
+      capture.admitted(); capture.cloud_recording(0); capture.cloud_recording(0);
+      capture.pcm({42, 16000, 1, 0, input}, 9000);
       capture.close();
       require(!capture.failed(), "A configured meeting API origin must reach the capture consumer");
-      int starts = 0;
-      for (const auto& event : output.events()) if (event["type"] == "cloud.recording_state") {
-        ++starts;
-        require(event["data"]["recording_start_unix_ms"] == 1700000000000 &&
-                event["data"]["timestamp_origin"] == "meeting_api.start_time",
-                "SDK status must anchor the first recording to the private join configuration");
-      }
-      require(starts == 1, "Duplicate starts must not reset the configured recording clock");
+      const auto chunks = output.chunks();
+      require(!chunks.empty(), "Configured recording must produce speech WAVs");
+      for (const auto& chunk : chunks)
+        require(chunk["data"]["recording_start_unix_ms"] == 1700000000000 &&
+                chunk["data"]["timestamp_origin"] == "meeting_api.start_time" &&
+                chunk["data"]["recording_id"] == "recording-1",
+                "Duplicate starts must preserve the first recording origin in WAV metadata");
     }
     {
       Output output;

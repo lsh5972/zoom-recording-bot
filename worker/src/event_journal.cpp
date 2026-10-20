@@ -7,11 +7,11 @@
 #include <unistd.h>
 
 namespace zoom_bot {
-EventJournal::EventJournal(const std::filesystem::path& output, std::string session_id)
+EventJournal::EventJournal(const std::filesystem::path& output, std::string session_id, const char* filename)
     : session_id_(std::move(session_id)) {
   if (std::filesystem::create_directories(output))
     std::filesystem::permissions(output, std::filesystem::perms::owner_all);
-  fd_ = open((output / "events.jsonl").c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  fd_ = open((output / filename).c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (fd_ < 0) throw std::runtime_error("Cannot create a new event journal");
 }
 

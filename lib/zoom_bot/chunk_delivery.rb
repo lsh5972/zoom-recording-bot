@@ -13,10 +13,12 @@ module ZoomBot
       File.open(File.join(@output, 'delivery.lock'), File::RDWR | File::CREAT, 0o600) do |lock|
         raise Error, 'Another chunk sender is running for this session' unless lock.flock(File::LOCK_EX | File::LOCK_NB)
 
-        return 0 unless File.exist?(File.join(@output, 'events.jsonl'))
+        journal_path = File.join(@output, 'chunks.jsonl')
+        journal_path = File.join(@output, 'events.jsonl') unless File.exist?(journal_path)
+        return 0 unless File.exist?(journal_path)
 
         delivered = 0
-        File.open(File.join(@output, 'events.jsonl'), 'rb') do |journal|
+        File.open(journal_path, 'rb') do |journal|
           offset = load_offset
           raise Error, 'Event journal is shorter than saved delivery progress' if offset > journal.size
 
