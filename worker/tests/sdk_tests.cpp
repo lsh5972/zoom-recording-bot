@@ -9,6 +9,7 @@
 #include <sndfile.h>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <unistd.h>
 
 using namespace zoom_bot;
@@ -41,12 +42,17 @@ struct Participants : IMeetingParticipantsControllerStub {
   User self{1, USERROLE_HOST, "Bot"}, alice{42, USERROLE_ATTENDEE, "Alice"}, bob{73, USERROLE_ATTENDEE, "Bob"};
   bool alice_available = true;
   int self_queries = 0;
+  std::vector<std::thread::id> lookup_threads;
+  std::vector<uint32_t> lookup_ids;
   List<uint32_t> users;
   Participants() { users.items = {1, 42, 73}; }
   SDKError SetEvent(IMeetingParticipantsCtrlEvent* value) override { listener = value; return SDKERR_SUCCESS; }
   IUserInfo* GetMySelfUser() override { ++self_queries; return &self; }
   IList<uint32_t>* GetParticipantsList() override { return &users; }
-  IUserInfo* GetUserByUserID(uint32_t id) override { return id == 1 ? &self : id == 42 ? (alice_available ? &alice : nullptr) : &bob; }
+  IUserInfo* GetUserByUserID(uint32_t id) override {
+    lookup_threads.push_back(std::this_thread::get_id()); lookup_ids.push_back(id);
+    return id == 1 ? &self : id == 42 ? (alice_available ? &alice : nullptr) : &bob;
+  }
 };
 struct Recording : IMeetingRecordingControllerStub {
   IMeetingRecordingCtrlEvent* listener = nullptr;
@@ -682,6 +688,44 @@ void admission_refreshes_names_received_before_user_info() {
           "WAV filenames must use the recovered display name instead of the generic speaker label");
 }
 
+void participant_callbacks_defer_sdk_queries() {
+  Backend sdk; backend = &sdk; Output output;
+  CaptureRuntime capture(output.root, "session");
+  {
+    ZoomSession session(config(), capture); admit(session, sdk);
+    auto& participants = sdk.meeting.participants;
+    participants.lookup_threads.clear(); participants.lookup_ids.clear();
+    participants.alice.name = "수현 이";
+    std::thread callback([&] {
+      List<uint32_t> changed; changed.items = {73};
+      participants.listener->onUserLeft(&changed, nullptr);
+      participants.listener->onUserJoin(&changed, nullptr);
+      changed.items = {42};
+      participants.listener->onUserNamesChanged(&changed);
+      changed.items.clear();  // The SDK-owned list expires before the main loop runs.
+    });
+    callback.join();
+    require(participants.lookup_threads.empty(), "Participant callbacks must not reenter the SDK to query users");
+    session.tick();
+    require(participants.lookup_ids == std::vector<uint32_t>{73, 42},
+            "Deferred departures, joins and renames must retain their own ordered user IDs");
+    for (auto thread : participants.lookup_threads)
+      require(thread == std::this_thread::get_id(), "User lookups must execute on the SDK main thread");
+    SF_INFO info{};
+    auto* file = sf_open(FVAD_FIXTURE, SFM_READ, &info);
+    require(file != nullptr, "Speech fixture must load");
+    Packet packet; packet.samples.resize(info.frames);
+    sf_readf_short(file, packet.samples.data(), info.frames); sf_close(file);
+    sdk.raw.delegate->onOneWayAudioRawDataReceived(&packet, 42);
+    session.stop("test_stop");
+  }
+  capture.close();
+  const auto chunks = output.chunks();
+  require(!capture.failed() && !chunks.empty() &&
+          chunks[0]["data"]["wav_path"].get<std::string>().find("__수현 이__") != std::string::npos,
+          "Deferred participant names must still reach speaker-specific WAV filenames");
+}
+
 void share_samples_static_frames_at_configured_intervals() {
   Backend sdk; backend = &sdk; Output output; ShareFrame frame;
   CaptureRuntime capture(output.root, "session");
@@ -857,6 +901,7 @@ int main() {
     real_pcm_fixture_through_sdk_callbacks();
     cloud_status_and_renames_reach_the_capture_consumer();
     admission_refreshes_names_received_before_user_info();
+    participant_callbacks_defer_sdk_queries();
     share_samples_static_frames_at_configured_intervals();
     share_permission_reconnect_and_switching();
     share_snapshots_preserve_pixels_without_packet_logs();

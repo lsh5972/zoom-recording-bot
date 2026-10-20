@@ -7,6 +7,12 @@ namespace zoom_bot {
 namespace {
 std::string name(IUserInfo* user) { return user && user->GetUserName() ? user->GetUserName() : ""; }
 
+std::vector<uint32_t> user_ids(IList<unsigned int>* ids) {
+  std::vector<uint32_t> result;
+  if (ids) for (int i = 0; i < ids->GetCount(); ++i) result.push_back(ids->GetItem(i));
+  return result;
+}
+
 #ifdef ZOOM_SHARE_DIAGNOSTICS
 void diagnostic(const char* type, nlohmann::json data) {
   std::cerr << nlohmann::json{{"type", type}, {"data", std::move(data)}}.dump() << '\n';
@@ -38,13 +44,19 @@ ZoomSession::ZoomSession(JoinConfig config, CaptureRuntime& capture)
     }
     defer([this, state, result] { status(state, result); });
   };
-  participant_events_.after_onUserJoin = [this](IList<unsigned int>* ids, const zchar_t*) { users(ids, true); };
-  participant_events_.after_onUserLeft = [this](IList<unsigned int>* ids, const zchar_t*) { users(ids, false); };
+  participant_events_.after_onUserJoin = [this](IList<unsigned int>* ids, const zchar_t*) {
+    defer([this, ids = user_ids(ids)] { users(ids, true); });
+  };
+  participant_events_.after_onUserLeft = [this](IList<unsigned int>* ids, const zchar_t*) {
+    defer([this, ids = user_ids(ids)] { users(ids, false); });
+  };
   participant_events_.after_onUserNamesChanged = [this](IList<unsigned int>* ids) {
-    if (ids && participants_) for (int i = 0; i < ids->GetCount(); ++i) {
-      auto* user = participants_->GetUserByUserID(ids->GetItem(i));
-      if (user) capture_.renamed(user->GetUserID(), name(user));
-    }
+    defer([this, ids = user_ids(ids)] {
+      if (participants_) for (auto id : ids) {
+        auto* user = participants_->GetUserByUserID(id);
+        if (user) capture_.renamed(user->GetUserID(), name(user));
+      }
+    });
   };
   recording_events_.after_onCloudRecordingStatus = [this](RecordingStatus status) {
     capture_.cloud_recording(static_cast<int>(status));
@@ -244,11 +256,9 @@ void ZoomSession::register_events(bool required) {
   attach(ai ? ai->GetMeetingAICompanionSmartSummaryHelper() : nullptr, summary_events_);
 }
 
-void ZoomSession::users(IList<unsigned int>* ids, bool joined) {
-  if (!ids || !participants_) return;
-  std::lock_guard<std::mutex> lock(users_mutex_);
-  for (int i = 0; i < ids->GetCount(); ++i) {
-    const auto id = ids->GetItem(i);
+void ZoomSession::users(const std::vector<uint32_t>& ids, bool joined) {
+  if (!participants_) return;
+  for (auto id : ids) {
     if (joined) {
       auto* user = participants_->GetUserByUserID(id);
       if (known_users_.insert(id).second) capture_.joined(id, name(user));
@@ -260,11 +270,10 @@ void ZoomSession::users(IList<unsigned int>* ids, bool joined) {
 void ZoomSession::snapshot_participants() {
   auto* list = participants_->GetParticipantsList();
   if (!list) return;
-  users(list, true);
-  std::set<uint32_t> present;
-  for (int i = 0; i < list->GetCount(); ++i) present.insert(list->GetItem(i));
+  const auto ids = user_ids(list);  // SDK lookups may invalidate the original participant list.
+  users(ids, true);
+  std::set<uint32_t> present(ids.begin(), ids.end());
   if (auto* self = participants_->GetMySelfUser()) present.insert(self->GetUserID());
-  std::lock_guard<std::mutex> lock(users_mutex_);
   for (auto it = known_users_.begin(); it != known_users_.end();) {
     if (present.count(*it)) { ++it; continue; }
     capture_.left(*it);  // Reconcile departures missed during a transport reconnect.

@@ -7,6 +7,7 @@
 #include <deque>
 #include <functional>
 #include <set>
+#include <vector>
 
 namespace zoom_bot {
 class ZoomSession final : public SdkEventSink, public IZoomSDKAudioRawDataDelegate {
@@ -32,7 +33,7 @@ class ZoomSession final : public SdkEventSink, public IZoomSDKAudioRawDataDelega
   void status(MeetingStatus status, int result);
   void register_events(bool required = false);
   void snapshot_participants();
-  void users(IList<unsigned int>* ids, bool joined);
+  void users(const std::vector<uint32_t>& ids, bool joined);
   void try_recording();
   void pause_recording(const std::string& reason);
   void error(const char* reason);
@@ -58,9 +59,9 @@ class ZoomSession final : public SdkEventSink, public IZoomSDKAudioRawDataDelega
   std::atomic<bool> denied_{false};
   std::atomic<bool> receiving_{false};
   std::chrono::steady_clock::time_point deadline_, next_permission_check_;
-  std::mutex actions_mutex_, users_mutex_, raw_mutex_;
+  std::mutex actions_mutex_, raw_mutex_;
   std::deque<std::function<void()>> actions_;
-  std::set<uint32_t> known_users_;
+  std::set<uint32_t> known_users_;  // Accessed only by the SDK main thread.
   ShareCapture share_;
 
   IAuthServiceEventListener auth_events_{*this};
