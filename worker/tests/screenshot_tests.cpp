@@ -43,8 +43,60 @@ ScreenshotFrame red_frame() {
   frame.i420 = std::move(pixels);
   return frame;
 }
+
+void planar_colors_and_padding() {
+  Output output; ScreenshotWriter writer(output.root); RecordingTimeline recordings;
+  recordings.change(0, 0, 0, 1700000000000);
+  const int expected[][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 255}};
+  const int positions[][4] = {{0, 1, 2, 3}, {2, 0, 3, 1}, {3, 2, 1, 0}, {1, 3, 0, 2}};
+  for (bool limited : {true, false}) for (const auto& size : {std::pair{640, 360}, std::pair{641, 359}}) {
+    ScreenshotFrame frame;
+    frame.width = size.first; frame.height = size.second; frame.limited_range = limited;
+    const auto y_size = frame.width * frame.height;
+    const auto uv_width = (frame.width + 1) / 2, uv_height = (frame.height + 1) / 2;
+    const auto uv_size = uv_width * uv_height;
+    const int limited_yuv[][3] = {{81, 90, 240}, {145, 54, 34}, {41, 240, 110}, {235, 128, 128}};
+    const int full_yuv[][3] = {{76, 85, 255}, {150, 44, 21}, {29, 255, 107}, {255, 128, 128}};
+    const auto* colors = limited ? limited_yuv : full_yuv;
+    auto planes = std::make_shared<std::vector<unsigned char>>(y_size + 2 * uv_size);
+    for (int y = 0; y < frame.height; ++y) for (int x = 0; x < frame.width; ++x)
+      (*planes)[y * frame.width + x] = colors[(y >= frame.height / 2) * 2 + (x >= frame.width / 2)][0];
+    for (int y = 0; y < uv_height; ++y) for (int x = 0; x < uv_width; ++x) {
+      const auto* color = colors[(y >= uv_height / 2) * 2 + (x >= uv_width / 2)];
+      (*planes)[y_size + y * uv_width + x] = color[1];
+      (*planes)[y_size + uv_size + y * uv_width + x] = color[2];
+    }
+    frame.i420 = std::move(planes);
+    for (int turn = 0; turn < 4; ++turn) {
+      frame.rotation = turn * 90;
+      const auto image = writer.write(frame, 0, recordings);
+      const auto pixels = decode(output.root / image["image_path"].get<std::string>());
+      const int rotated_width = turn % 2 ? frame.height : frame.width;
+      const int rotated_height = turn % 2 ? frame.width : frame.height;
+      const auto scale = std::min(640.0 / rotated_width, 360.0 / rotated_height);
+      const int w = rotated_width * scale, h = rotated_height * scale;
+      for (int quadrant = 0; quadrant < 4; ++quadrant) {
+        const int x = (640 - w) / 2 + w * (quadrant % 2 ? 3 : 1) / 4;
+        const int y = (360 - h) / 2 + h * (quadrant / 2 ? 3 : 1) / 4;
+        for (int channel = 0; channel < 3; ++channel)
+          require(std::abs(static_cast<int>(pixels[(y * 640 + x) * 3 + channel]) -
+                           expected[positions[turn][quadrant]][channel]) < 15,
+                  "Planar JPEG must preserve chroma, color range and rotation for even and odd source dimensions");
+      }
+      const auto bottom = (359 * 640 + 639) * 3;
+      if (turn == 0 && frame.width == 640)
+        require(pixels[bottom] > 245 && pixels[bottom + 1] > 245 && pixels[bottom + 2] > 245,
+                "The final JPEG MCU must replicate the last valid plane rows without corrupting the image bottom");
+      if (turn % 2)
+        require(pixels[0] < 5 && pixels[1] < 5 && pixels[2] < 5,
+                "Planar letterboxing must remain neutral black after rotation");
+    }
+  }
+}
+
 int main() {
   try {
+    planar_colors_and_padding();
     Output output; ScreenshotWriter writer(output.root); RecordingTimeline recordings;
     const int64_t epoch = 1700000000000;
     recordings.change(0, 0, -72000, epoch);

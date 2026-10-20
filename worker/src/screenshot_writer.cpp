@@ -26,7 +26,7 @@ struct JpegEncoder {
   ~JpegEncoder() { jpeg_destroy_compress(&compressor); std::free(bytes); }
 };
 
-std::vector<unsigned char> rgb(const ScreenshotFrame& frame) {
+std::vector<unsigned char> ycbcr(const ScreenshotFrame& frame) {
   if (frame.width <= 0 || frame.height <= 0 || frame.width > 8192 || frame.height > 8192)
     throw std::runtime_error("Invalid shared-screen size");
   const auto pixels = static_cast<size_t>(frame.width) * frame.height;
@@ -35,6 +35,26 @@ std::vector<unsigned char> rgb(const ScreenshotFrame& frame) {
       !frame.i420 || frame.i420->size() != pixels + 2 * static_cast<size_t>(chroma_width) * chroma_height ||
       (frame.rotation != 0 && frame.rotation != 90 && frame.rotation != 180 && frame.rotation != 270))
     throw std::runtime_error("Invalid shared-screen frame");
+  // JPEG uses full-range YCbCr. Keep full-range, unscaled I420 in its original planes.
+  if (frame.width == width && frame.height == height && frame.rotation == 0 && !frame.limited_range) return {};
+  std::array<unsigned char, 256> luma, chroma;
+  for (int value = 0; value < 256; ++value) {
+    luma[value] = frame.limited_range ? std::clamp(((value - 16) * 255 + 109) / 219, 0, 255) : value;
+    chroma[value] = frame.limited_range ?
+        std::clamp(128 + ((value - 128) * 255 + (value >= 128 ? 112 : -112)) / 224, 0, 255) : value;
+  }
+  std::vector<unsigned char> result(width * height * 3 / 2, 128);
+  auto* out_y = result.data();
+  auto* out_u = out_y + width * height;
+  auto* out_v = out_u + width * height / 4;
+  const auto* y = frame.i420->data();
+  const auto* u = y + pixels;
+  const auto* v = u + static_cast<size_t>(chroma_width) * chroma_height;
+  if (frame.width == width && frame.height == height && frame.rotation == 0) {
+    for (int i = 0; i < width * height; ++i) out_y[i] = luma[y[i]];
+    for (int i = 0; i < width * height / 4; ++i) { out_u[i] = chroma[u[i]]; out_v[i] = chroma[v[i]]; }
+    return result;
+  }
   const bool swapped = frame.rotation == 90 || frame.rotation == 270;
   const int rotated_width = swapped ? frame.height : frame.width;
   const int rotated_height = swapped ? frame.width : frame.height;
@@ -43,37 +63,39 @@ std::vector<unsigned char> rgb(const ScreenshotFrame& frame) {
   const int image_width = std::max(1, static_cast<int>(rotated_width * scale));
   const int image_height = std::max(1, static_cast<int>(rotated_height * scale));
   const int left = (width - image_width) / 2, top = (height - image_height) / 2;
-  const auto* y = frame.i420->data();
-  const auto* u = y + pixels;
-  const auto* v = u + static_cast<size_t>(chroma_width) * chroma_height;
-  std::vector<unsigned char> result(width * height * 3, 0);
+  std::fill(out_y, out_u, 0);  // Black letterbox in full-range YCbCr is (0, 128, 128).
   std::array<int, width> columns;
   std::array<int, height> rows;
   for (int column = 0; column < image_width; ++column) columns[column] = column * rotated_width / image_width;
   for (int row = 0; row < image_height; ++row) rows[row] = row * rotated_height / image_height;
-  for (int row = 0; row < image_height; ++row) for (int column = 0; column < image_width; ++column) {
+  auto source = [&](int column, int row) {
     const int rx = columns[column], ry = rows[row];
     const int sx = frame.rotation == 90 ? ry : frame.rotation == 180 ? frame.width - rx - 1 :
                    frame.rotation == 270 ? frame.width - ry - 1 : rx;
     const int sy = frame.rotation == 90 ? frame.height - rx - 1 : frame.rotation == 180 ? frame.height - ry - 1 :
                    frame.rotation == 270 ? rx : ry;
-    const int uv = (sy / 2) * chroma_width + sx / 2;
-    const int luminance = y[sy * frame.width + sx];
-    const int cb = u[uv] - 128, cr = v[uv] - 128;
-    const int base = frame.limited_range ? 298 * (luminance - 16) : 256 * luminance;
-    const int red = base + (frame.limited_range ? 409 : 359) * cr;
-    const int green = base - (frame.limited_range ? 100 : 88) * cb - (frame.limited_range ? 208 : 183) * cr;
-    const int blue = base + (frame.limited_range ? 516 : 454) * cb;
-    auto* pixel = result.data() + ((row + top) * width + column + left) * 3;
-    pixel[0] = std::clamp((red + 128) / 256, 0, 255);
-    pixel[1] = std::clamp((green + 128) / 256, 0, 255);
-    pixel[2] = std::clamp((blue + 128) / 256, 0, 255);
+    return std::pair{sx, sy};
+  };
+  for (int row = 0; row < image_height; ++row) for (int column = 0; column < image_width; ++column) {
+    const auto [sx, sy] = source(column, row);
+    out_y[(row + top) * width + column + left] = luma[y[sy * frame.width + sx]];
+  }
+  for (int row = 0; row < height / 2; ++row) for (int column = 0; column < width / 2; ++column) {
+    const int x = column * 2 - left, y_position = row * 2 - top;
+    if (x < 0 || y_position < 0 || x >= image_width || y_position >= image_height) continue;
+    const auto [sx, sy] = source(x, y_position);
+    const auto uv = (sy / 2) * chroma_width + sx / 2;
+    out_u[row * width / 2 + column] = chroma[u[uv]];
+    out_v[row * width / 2 + column] = chroma[v[uv]];
   }
   return result;
 }
 
 std::vector<unsigned char> encode(const ScreenshotFrame& frame) {
-  const auto pixels = rgb(frame);
+  const auto pixels = ycbcr(frame);
+  const auto* y = pixels.empty() ? frame.i420->data() : pixels.data();
+  const auto* u = y + width * height;
+  const auto* v = u + width * height / 4;
   // Heap state remains valid after libjpeg's longjmp; RAII releases its destination buffer.
   auto encoder = std::make_unique<JpegEncoder>();
   auto& compressor = encoder->compressor;
@@ -86,13 +108,26 @@ std::vector<unsigned char> encode(const ScreenshotFrame& frame) {
   compressor.image_width = width;
   compressor.image_height = height;
   compressor.input_components = 3;
-  compressor.in_color_space = JCS_RGB;
+  compressor.in_color_space = JCS_YCbCr;
   jpeg_set_defaults(&compressor);
+  jpeg_set_colorspace(&compressor, JCS_YCbCr);
+  compressor.raw_data_in = TRUE;
+  compressor.comp_info[0].h_samp_factor = compressor.comp_info[0].v_samp_factor = 2;
+  for (int plane = 1; plane < 3; ++plane)
+    compressor.comp_info[plane].h_samp_factor = compressor.comp_info[plane].v_samp_factor = 1;
   jpeg_set_quality(&compressor, 80, TRUE);
   jpeg_start_compress(&compressor, TRUE);
   while (compressor.next_scanline < compressor.image_height) {
-    JSAMPROW row = const_cast<unsigned char*>(pixels.data() + compressor.next_scanline * width * 3);
-    jpeg_write_scanlines(&compressor, &row, 1);
+    JSAMPROW y_rows[16], u_rows[8], v_rows[8];
+    for (int row = 0; row < 16; ++row)
+      y_rows[row] = const_cast<unsigned char*>(y + std::min<int>(compressor.next_scanline + row, height - 1) * width);
+    for (int row = 0; row < 8; ++row) {
+      const auto offset = std::min<int>(compressor.next_scanline / 2 + row, height / 2 - 1) * width / 2;
+      u_rows[row] = const_cast<unsigned char*>(u + offset);
+      v_rows[row] = const_cast<unsigned char*>(v + offset);
+    }
+    JSAMPARRAY planes[] = {y_rows, u_rows, v_rows};
+    jpeg_write_raw_data(&compressor, planes, 16);
   }
   jpeg_finish_compress(&compressor);
   return std::vector<unsigned char>(encoder->bytes, encoder->bytes + encoder->size);
