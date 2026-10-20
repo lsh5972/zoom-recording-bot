@@ -1,0 +1,71 @@
+worker/CMakeLists.txt
+  s_94b8728166fbc7::t_0ec206e1683693 46
+worker/src/audio_pipeline.cpp
+  s_94b8728166fbc7::t_c0b29a826297fe 47,69
+  s_94b8728166fbc7::t_4803cfec903063 8-9,12,15,77
+lib/zoom_bot/chunk_delivery.rb
+  s_94b8728166fbc7::t_c0b29a826297fe 16-18,21
+worker/src/audio_segmenter.cpp
+  s_94b8728166fbc7::t_c0b29a826297fe 82
+  s_94b8728166fbc7::t_829e069493281a 20,25,130,146-147
+README.md
+  s_94b8728166fbc7::t_3bd72cd844c2ac 461-462,464-467,479
+  s_94b8728166fbc7::t_ad9048e94e82db 12-14,25,194,202,312,317-319,326-327,332-333,335,337-338,352,372,374-375,414-415,417,421,451,454
+  s_94b8728166fbc7::t_4fafcce4687811 463
+worker/src/replay.cpp
+  s_94b8728166fbc7::t_c0b29a826297fe 41
+worker/src/zoom_session.cpp
+  s_94b8728166fbc7::t_0ec206e1683693 4,9-12,14,147,176,224-225,227-234,236-240,242-244,275,313,337,341,349,358,363,424,432-434
+worker/src/main.cpp
+  s_94b8728166fbc7::t_0ec206e1683693 48
+  s_94b8728166fbc7::t_c0b29a826297fe 26
+worker/src/capture_runtime.cpp
+  s_94b8728166fbc7::t_4fafcce4687811 220
+  s_94b8728166fbc7::t_c0b29a826297fe 5,35-36,76-80,152,158,163,165,224,228,231
+  s_94b8728166fbc7::t_3bd72cd844c2ac 232
+worker/src/event_journal.cpp
+  s_94b8728166fbc7::t_c0b29a826297fe 10,14
+worker/tests/sdk_tests.cpp
+  s_94b8728166fbc7::t_f314b115dee7d5 10,249,254-284,415,417,419,439,483,504,530,553,605,609,627,653-656,680,708-710,746,750,773,777-779,801,825,837,840,842,862
+  s_94b8728166fbc7::t_3bd72cd844c2ac 340-345,864
+  s_94b8728166fbc7::t_5ed3935c0e8bd3 315-339,346-349,850
+test/chunk_delivery_test.rb
+  s_94b8728166fbc7::t_5ed3935c0e8bd3 53,55-67,69,71,74,113,153
+  s_94b8728166fbc7::t_f6ba43844c42c1 52,54,68,70,72-73,75-76,111,123,158
+worker/tests/audio_tests.cpp
+  s_94b8728166fbc7::t_f314b115dee7d5 30,54,81,108,119,134,150,206,237,264,284,297,309,312-325,327,329-330,339,365,380,392,437
+worker/include/zoom_bot/capture_runtime.hpp
+  s_94b8728166fbc7::t_c0b29a826297fe 21,34,48
+worker/include/zoom_bot/event_journal.hpp
+  s_94b8728166fbc7::t_c0b29a826297fe 12
+scripts/generate_sdk_listeners.py
+  s_94b8728166fbc7::t_1bd664bfd4661a 68-69
+worker/include/zoom_bot/audio_pipeline.hpp
+  s_94b8728166fbc7::t_740d3f0a0688ae 19,32,51
+worker/include/zoom_bot/audio_segmenter.hpp
+  s_94b8728166fbc7::t_25cf22b5a55be5 17,33
+worker/src/share_capture.cpp
+  s_94b8728166fbc7::t_1fb491c41f2f64 23,37-38,140,144,147-148
+worker/tests/capture_tests.cpp
+  s_94b8728166fbc7::t_a02c626498e328 4,7,17-18,20-30,34-44,47,49,51-53,55-58,61-69,71-75,80,82-87,90-94,96,99-108,110-111,115,117-118,121-127
+worker/tests/journal_tests.cpp
+  s_94b8728166fbc7::t_875ac65a566fac 34,49,53,67,77
+worker/tests/performance_benchmark.cpp
+  s_94b8728166fbc7::t_cb3a972dc122eb 43,69-70,76,83-85,87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "97509a91c296d51432b0d2a8496bcc3a75e1a850",
+  "prompts": {},
+  "sessions": {
+    "s_94b8728166fbc7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0f0d4-b78d-73d3-ad32-f8b29da885c8",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Soohyeon Lee <soohyeon.lee@privatenote.co.kr>"
+    }
+  }
+}
