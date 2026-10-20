@@ -16,13 +16,14 @@ module ZoomBot
       raise Error, 'Native worker image unavailable; SDK worker must be built first' unless status.success?
     end
 
-    def start(session)
+    def start(session, host_network: false)
       directory = File.realpath(session.fetch(:directory))
       name = "zoom-bot-#{session.fetch(:session_id)}"
       # User tokens travel in a private read-only file, never argv or Docker env.
       _out, _err, status = @command.call(
         'docker', 'run', '--detach', '--pull=never', '--rm', '--name', name,
         '--label', "zoom-bot.session=#{session.fetch(:session_id)}",
+        *(host_network ? ['--network=host'] : []),
         '--mount', "type=bind,src=#{directory}/join.json,dst=/run/zoom-bot/join.json,readonly",
         '--mount', "type=bind,src=#{directory}/output,dst=/data",
         @image, '--config', '/run/zoom-bot/join.json', '--output', '/data'

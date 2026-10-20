@@ -11,7 +11,10 @@ begin
     ZoomBot::Settings.new
     puts 'Required environment variables are present. No Zoom authentication or SDK test performed.'
   when 'prepare', 'run'
-    raise ZoomBot::Error, "Usage: bin/zoom-bot #{command} MEETING_ID" unless ARGV.length == 1
+    host_network = command == 'run' && ARGV.last == '--network=host'
+    ARGV.pop if host_network
+    usage = "Usage: bin/zoom-bot #{command} MEETING_ID#{command == 'run' ? ' [--network=host]' : ''}"
+    raise ZoomBot::Error, usage unless ARGV.length == 1
     meeting_id = ZoomBot::SessionPreparer.normalize_id(ARGV.first)
     settings = ZoomBot::Settings.new
     if command == 'run'
@@ -27,7 +30,7 @@ begin
                                           screenshot_interval_seconds: settings.fetch('ZOOM_SCREENSHOT_INTERVAL_SECONDS'))
     session = preparer.prepare(meeting_id)
     if command == 'run'
-      supervisor.start(session)
+      supervisor.start(session, host_network: host_network)
       puts 'Container launched. Meeting admission and recording permission are not yet verified.'
     else
       puts 'Bot user ZAK and SDK JWT prepared. No bot has joined a meeting.'
@@ -65,7 +68,7 @@ begin
       end
     end
   else
-    warn 'Usage: ruby bin/zoom-bot check | prepare MEETING_ID | run MEETING_ID | stop MEETING_ID | deliver MEETING_ID [--watch]'
+    warn 'Usage: ruby bin/zoom-bot check | prepare MEETING_ID | run MEETING_ID [--network=host] | stop MEETING_ID | deliver MEETING_ID [--watch]'
     exit 1
   end
 rescue ZoomBot::Error, Errno::ENOENT, Errno::EACCES => error

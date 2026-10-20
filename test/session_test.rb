@@ -135,6 +135,7 @@ class SessionTest < Minitest::Test
       assert_equal "zoom-bot-#{session[:session_id]}", name
       args = calls.last
       assert_equal %w[docker run --detach --pull=never], args.first(4)
+      refute_includes args, '--network=host'
       assert args.any? { |argument| argument.end_with?('join.json,readonly') }
       refute_includes args.join(' '), 'never-in-argv'
       assert_includes args, '--rm'

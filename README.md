@@ -246,6 +246,19 @@ ZOOM_BOT_IMAGE=zoom-bot-worker-arm64:local ./bin/zoom-bot-docker run 12345678902
 ./bin/zoom-bot-docker stop 12345678901
 ```
 
+Linux 서버에서 worker가 호스트 네트워크를 사용하게 하려면 `run` 뒤에 `--network=host`를 지정한다.
+이 옵션은 실제 회의 worker의 `docker run`에 전달된다. 생략하면 기존 Docker 기본 네트워크를 사용한다.
+빌드할 때 지정한 `--network=host`는 실행에 적용되지 않는다.
+
+```sh
+# 이 옵션을 추가한 코드로 업데이트한 뒤 관리 이미지만 한 번 재빌드한다.
+sudo ./bin/zoom-bot-docker build
+sudo env ZOOM_BOT_IMAGE=zoom-bot-worker:amd64 ./bin/zoom-bot-docker run 12345678901 --network=host
+```
+
+기존 C++·SDK worker 이미지는 재빌드할 필요 없다. `sudo env`로 이미지 선택을 전달하면
+`sudo`의 환경변수 제거로 인해 다른 이미지가 선택되는 것을 피할 수 있다.
+
 한 번의 `run`으로 회의 worker 하나를 실행한다. 출력 경로는 `runs/<meeting_id>/output/`이다.
 같은 meeting ID 폴더가 이미 있으면 기존 녹음을 보호하기 위해 준비·중복 실행을 거부한다.
 기존 폴더를 자동 삭제하거나 덮어쓰지 않는다. UUID는 내부 session·container·chunk 식별자로 유지한다.
